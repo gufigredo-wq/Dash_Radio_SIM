@@ -1,0 +1,10 @@
+# versões fixas, as mesmas testadas no desenvolvimento (Python 3.12)
+streamlit==1.65.0
+plotly==7.1.0
+pandas==3.0.2
+numpy==2.4.4
+scipy==1.17.1
+statsmodels==0.15.0
+openpyxl==3.1.5
+matplotlib==3.10.8
+requests==2.33.1

@@ -1,0 +1,4 @@
+cache_modelos/
+backups/
+__pycache__/
+.streamlit/secrets.toml
