@@ -37,7 +37,7 @@ def abre(estado=None):
 def test_abre_as_duas_abas():
     at = abre()
     rotulos = [t.label for t in at.tabs]
-    assert rotulos[:2] == ["Visão geral", "Projeções e cenários"]
+    assert [r.split(" ", 1)[-1] for r in rotulos[:2]] == ["Visão geral", "Projeções e cenários"]
     assert any('class="demo"' in m.value for m in at.markdown), "faixa de demonstração não apareceu"
     assert len([k for k in at.session_state["_kpis"] if k["aba"] == "Visão geral"]) >= 1
 
