@@ -302,9 +302,29 @@ header[data-testid="stHeader"] * {{pointer-events:none !important;}}
   ul.resumo li {{font-size:.8rem;}}
   [data-testid="stDialog"] [role="dialog"] {{width:96vw !important; max-width:96vw !important;}}
 }}
-ul.resumo {{margin:4px 0 2px 2px; padding-left:18px;}}
-ul.resumo li {{font-size:.86rem; color:{TINTA2}; line-height:1.6; margin:2px 0;}}
+ul.resumo {{margin:6px 0 4px; padding:0; list-style:none; display:grid; gap:7px;}}
+ul.resumo li {{display:flex; gap:10px; align-items:flex-start; font-size:.86rem; color:{TINTA2}; line-height:1.55;
+    animation:subir .45s cubic-bezier(.2,.7,.2,1) backwards;}}
+ul.resumo li:nth-child(2) {{animation-delay:.06s;}} ul.resumo li:nth-child(3) {{animation-delay:.12s;}}
+ul.resumo li:nth-child(4) {{animation-delay:.18s;}} ul.resumo li:nth-child(5) {{animation-delay:.24s;}}
 ul.resumo li b {{color:{TINTA};}}
+ul.resumo .ic {{flex:none; width:22px; height:22px; border-radius:7px; display:grid; place-items:center; font-size:.72rem;
+    font-weight:700; margin-top:1px;}}
+ul.resumo .ic.sobe {{background:color-mix(in srgb, {SOBE} 16%, transparent); color:{SOBE};}}
+ul.resumo .ic.desce {{background:color-mix(in srgb, {DESCE} 16%, transparent); color:{DESCE};}}
+ul.resumo .ic.neutro {{background:color-mix(in srgb, #2a78d6 14%, transparent); color:#2a78d6;}}
+.secao {{display:flex; align-items:center; gap:12px; margin:16px 0 8px; animation:subir .5s cubic-bezier(.2,.7,.2,1) backwards;}}
+.secao .num {{width:28px; height:28px; border-radius:9px; display:grid; place-items:center; font-weight:700; font-size:.86rem;
+    color:#fff; background:linear-gradient(135deg,#2a78d6,#7b5cff); box-shadow:0 6px 16px rgba(42,120,214,.30); flex:none;}}
+.secao .st {{font-size:1rem; font-weight:700; color:{TINTA}; letter-spacing:.1px;}}
+.secao .ss {{font-size:.74rem; color:{CINZA};}}
+.secao .linha {{flex:1; height:1px; background:linear-gradient(90deg, rgba(42,120,214,.45), transparent); margin-left:6px;}}
+.kpi .spark {{display:block; width:100%; height:30px; margin:4px 0 2px;}}
+.med {{display:inline-grid; place-items:center; min-width:26px; height:20px; padding:0 4px; border-radius:999px; font-size:.7rem;
+    font-weight:700; color:#fff;}}
+.med.m1 {{background:linear-gradient(135deg,#f5c542,#d79a00);}}
+.med.m2 {{background:linear-gradient(135deg,#c9ced8,#8f97a6);}}
+.med.m3 {{background:linear-gradient(135deg,#e3a27a,#b06a3b);}}
 .st-key-tema_btn, .st-key-pdf_btn {{display:flex; justify-content:flex-end;}}
 .st-key-pdf_btn button {{background:rgba(255,255,255,.08) !important; color:#dbe4ff !important; border:1px solid rgba(255,255,255,.3) !important;
     border-radius:999px !important; padding:5px 15px !important; min-height:0 !important; white-space:nowrap; box-shadow:none !important;}}
@@ -615,13 +635,33 @@ def registra_tabela(chave, titulo, colunas, linhas, sub=""):
                                               "fig": {"tabela": {"colunas": colunas, "linhas": linhas}}})
 
 
+def sparkline(vals, cor, larg=120, alt=30):
+    """Minigráfico em SVG (últimos bancos), com área suave e o último ponto destacado."""
+    v = [float(x) for x in vals if x is not None and pd.notna(x)]
+    if len(v) < 3:
+        return ""
+    lo, hi = min(v), max(v)
+    amp = (hi - lo) or 1
+    pts = [(i / (len(v) - 1) * (larg - 6) + 3, alt - 4 - (x - lo) / amp * (alt - 8)) for i, x in enumerate(v)]
+    linha = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    area = f"3,{alt} " + linha + f" {pts[-1][0]:.1f},{alt}"
+    gid = f"g{abs(hash((tuple(v), cor))) % 10**8}"
+    return (f'<svg class="spark" viewBox="0 0 {larg} {alt}" preserveAspectRatio="none" aria-hidden="true">'
+            f'<defs><linearGradient id="{gid}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="{cor}" stop-opacity=".28"/>'
+            f'<stop offset="1" stop-color="{cor}" stop-opacity="0"/></linearGradient></defs>'
+            f'<polygon points="{area}" fill="url(#{gid})"/><polyline points="{linha}" fill="none" stroke="{cor}" stroke-width="1.8" '
+            f'stroke-linejoin="round" stroke-linecap="round"/><circle cx="{pts[-1][0]:.1f}" cy="{pts[-1][1]:.1f}" r="2.8" fill="{cor}"/></svg>')
+
+
 def kpis(lista):
+    itens = [(x + (None,))[:5] for x in lista]
     if isinstance(st.session_state.get("_kpis_run"), list):
         st.session_state["_kpis_run"].append({"aba": st.session_state.get("_aba_atual", ""),
-                                              "cartoes": [(_sem_tags(t), _sem_tags(v), _sem_tags(d), c) for t, v, d, c in lista]})
+                                              "cartoes": [(_sem_tags(t), _sem_tags(v), _sem_tags(d), c) for t, v, d, c, _ in itens]})
     st.markdown('<div class="kpis">' + "".join(
         f'<div class="kpi" style="--c:{c}"><div class="t" title="{t}">{t}</div><div class="v">{v}</div>'
-        f'<div class="d" title="{_sem_tags(dsc)}">{dsc}</div></div>' for t, v, dsc, c in lista) + "</div>", unsafe_allow_html=True)
+        + (sparkline(sp, c) if sp is not None else "") +
+        f'<div class="d" title="{_sem_tags(dsc)}">{dsc}</div></div>' for t, v, dsc, c, sp in itens) + "</div>", unsafe_allow_html=True)
 
 
 def delta_html(atual, anterior):
@@ -1234,6 +1274,7 @@ def extras_visao(ems, serie, periodos, p0, p1, em_foco):
     pedidas = [c for c in VIS_EXTRA if mostra(c)]
     if not pedidas:
         return
+    secao(4, "Mais visualizações", "escolhidas em 🧩 Visualizações da tela inicial, no rodapé")
     fins = _fins_do_periodo(serie, periodos)
     rot = [rot_movel(f) for f in fins]
     faixa_txt = f"{rot[0]} a {rot[-1]}" if rot else ""
@@ -1467,6 +1508,11 @@ def bloco_tendencia(ems, p0, p1, serie):
                     f'sobrepõem como os bancos móveis.</div>', unsafe_allow_html=True)
 
 
+def secao(num, titulo, sub=""):
+    st.markdown(f'<div class="secao"><div class="num">{num}</div><div><div class="st">{titulo}</div>'
+                f'{f"<div class=ss>{sub}</div>" if sub else ""}</div><div class="linha"></div></div>', unsafe_allow_html=True)
+
+
 def _dupla(a, b, larg=(1.15, 1)):
     """Duas posições lado a lado; se só uma das duas for mostrada, ela ocupa a linha toda."""
     if a and b:
@@ -1511,6 +1557,7 @@ def pagina1():
     # ---- KPIs (emissoras próprias selecionadas) + posição no ranking do último banco
     ult = MOVEL["fim"].max()
     rk = _ranking(ult)
+    secao(1, "Indicadores do último banco", f"{rot_movel(MOVEL['fim'].max())} · GFM 90.1 e Bahia FM")
     lista = []
     for e in [x for x in ems if x in EMISSORAS] or EMISSORAS:
         s = M.movel_serie(MOVEL, e)
@@ -1520,7 +1567,8 @@ def pagina1():
         mb = media_bancos(e)
         ano = int(mb.index.max()); nb = int(mb.loc[ano, "size"])
         lista += [(f"{NOME[e]} · {rot_movel(t)}", br(s[t]),
-                   (f"{delta_html(s[t], ant)} vs banco anterior ({rot_movel(t_ant)})" if ant else f"banco anterior ({rot_movel(t_ant)}) sem dado"), COR[e]),
+                   (f"{delta_html(s[t], ant)} vs banco anterior ({rot_movel(t_ant)})" if ant else f"banco anterior ({rot_movel(t_ant)}) sem dado"), COR[e],
+                   list(s.iloc[-13:].values)),
                   (f"{NOME[e]} · {rot_movel(t)} vs {rot_movel(t_aa)}", pct(s[t] / aa - 1, sinal=True) if aa else "–",
                    (f"mesmo banco do ano anterior · {br(s[t])} vs {br(aa)} ({'+' if s[t] - aa > 0 else ''}{br(s[t] - aa)} ouvintes)"
                     if aa else f"mesmo banco do ano anterior ({rot_movel(t_aa)}) sem dado"), COR[e])]
@@ -1537,8 +1585,20 @@ def pagina1():
     st.session_state["_resumo_run"] = [_sem_tags(f_) for f_ in frases]
     if mostra("resumo") and frases:
         with cartao("Resumo", f"gerado a partir dos números de {rot_movel(MOVEL['fim'].max())}"):
-            st.markdown('<ul class="resumo">' + "".join(f"<li>{f_}</li>" for f_ in frases) + "</ul>", unsafe_allow_html=True)
+            def _icone(f_):
+                t = _sem_tags(f_).lower()
+                if "maior alta" in t:
+                    return "⇅", "neutro"
+                if "lidera" in t:
+                    return "★", "sobe"
+                alta, queda = t.count("alta de") + t.count("acima"), t.count("queda de") + t.count("abaixo")
+                return ("▲", "sobe") if alta > queda else (("▼", "desce") if queda > alta else ("●", "neutro"))
+            st.markdown('<ul class="resumo">' + "".join(
+                f'<li><span class="ic {_icone(f_)[1]}">{_icone(f_)[0]}</span><span>{f_}</span></li>' for f_ in frases) + "</ul>",
+                unsafe_allow_html=True)
 
+    if any(mostra(c) for c in ("evolucao", "anual", "ranking")):
+        secao(2, "Evolução e concorrência", "período, média do ano e posição entre as emissoras")
     if mostra("evolucao"):
         # ---- gráfico principal: barras horizontais por período (padrão do slide "Evolução trimestral")
         nome_serie = {"B": "banco", "T": "trimestre fechado", "A": "ano"}[serie[0]]
@@ -1610,7 +1670,8 @@ def pagina1():
                     return f'<td class="n" style="color:{SOBE if v > 0 else DESCE}">{("+" if v > 0 else "") + br(v)}</td>'
                 linhas = ""
                 for pos, r in rk2.head(12).iterrows():
-                    linhas += (f'<tr{" class=hl" if r.emissora in ems else ""}><td>{pos}º</td><td><span style="color:{COR.get(r.emissora, CINZA)}">■</span> '
+                    _pos = f'<span class="med m{pos}">{pos}º</span>' if pos <= 3 else f"{pos}º"
+                    linhas += (f'<tr{" class=hl" if r.emissora in ems else ""}><td>{_pos}</td><td><span style="color:{COR.get(r.emissora, CINZA)}">■</span> '
                                f'{NOME.get(r.emissora, r.emissora)}{" #" if r.amostra_baixa else ""}</td><td class="n">{br(r.opm)}</td>'
                                + _d(r.opm - antes.get(r.emissora, np.nan)) + _d(r.opm - ano_ant.get(r.emissora, np.nan)) +
                                f'<td style="width:24%"><div class="bar" style="width:{r.opm / mx * 100:.1f}%; background:{COR.get(r.emissora, CINZA)}"></div></td></tr>')
@@ -1627,6 +1688,8 @@ def pagina1():
                                 sub="todas as emissoras medidas · Δ = diferença de OPM# vs banco anterior e vs mesmo banco do ano anterior")
 
     # ---- linha 3: curva do ano | mapa de calor (emissora em foco)
+    if mostra("curva") or mostra("calor") or mostra("comparativo"):
+        secao(3, "Histórico e sazonalidade", "a emissora em foco ao longo dos anos")
     if mostra("curva") or mostra("calor") or mostra("sazonal"):
         em_foco = st.segmented_control("Emissora em foco nos gráficos abaixo", ems, default=ems[0], format_func=NOME.get,
                                        key=f"p1_foco_{'_'.join(ems)}") or ems[0]
@@ -2467,7 +2530,7 @@ if st.session_state.pop("_abrir_pdf", False):
     st.session_state.pop("_pdf_bytes", None)
     janela_pdf()
 
-VERSAO_PAINEL = "23/10/2026 · v12 (resumo, tendência, validação, celular)"
+VERSAO_PAINEL = "23/10/2026 · v13 (visual: seções, minigráficos, medalhas)"
 _rodape = st.container(key="notas")
 with _rodape, st.expander("🧩 Visualizações da tela inicial"):
     st.markdown('<div class="vs">Marque o que deve aparecer na Visão geral. As padrão já vêm marcadas; para tirar uma '
