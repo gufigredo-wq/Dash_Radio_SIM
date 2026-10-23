@@ -302,6 +302,36 @@ header[data-testid="stHeader"] * {{pointer-events:none !important;}}
   ul.resumo li {{font-size:.8rem;}}
   [data-testid="stDialog"] [role="dialog"] {{width:96vw !important; max-width:96vw !important;}}
 }}
+/* ---------- interações (valem só com o script de efeitos rodando: classe fx-on) ---------- */
+.fx-on [class*="st-key-card"]::after, .fx-on .kpi::after, .fx-on .gcard::after {{content:""; position:absolute; inset:0; border-radius:inherit;
+    pointer-events:none; opacity:0; transition:opacity .25s;
+    background:radial-gradient(420px circle at var(--mx, 50%) var(--my, 50%), rgba(42,120,214,.10), transparent 45%);}}
+.fx-on [class*="st-key-card"]:hover::after, .fx-on .kpi:hover::after, .fx-on .gcard:hover::after {{opacity:1;}}
+.fx-on .kpi {{transition:transform .18s ease-out, box-shadow .25s; transform-style:preserve-3d; will-change:transform;}}
+.tem-onda {{position:relative; overflow:hidden;}}
+.onda-toque {{position:absolute; border-radius:50%; pointer-events:none; background:rgba(42,120,214,.28);
+    transform:scale(0); animation:toque .6s ease-out forwards;}}
+@keyframes toque {{ to {{transform:scale(1); opacity:0;}} }}
+.rev-on [class*="st-key-card"]:not(.revelado), .rev-on .secao:not(.revelado) {{opacity:0; transform:translateY(18px) scale(.985);}}
+.rev-on [class*="st-key-card"].revelado, .rev-on .secao.revelado {{opacity:1; transform:none;
+    transition:opacity .6s cubic-bezier(.2,.7,.2,1), transform .6s cubic-bezier(.2,.7,.2,1), box-shadow .25s, border-color .25s;}}
+#barra-carga {{position:fixed; left:0; top:0; height:3px; width:100%; z-index:1000200; pointer-events:none; opacity:0;
+    background:linear-gradient(90deg, transparent, #00c2ff, #2a78d6, #7b5cff, transparent); background-size:50% 100%;
+    background-repeat:no-repeat; transition:opacity .3s;}}
+#barra-carga.ativa {{opacity:1; animation:carga 1.1s linear infinite;}}
+@keyframes carga {{ from {{background-position:-50% 0;}} to {{background-position:150% 0;}} }}
+.st-key-topo canvas.ondas {{position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:0;}}
+#atalhos {{position:fixed; inset:0; z-index:1000300; display:none; place-items:center; background:rgba(0,10,40,.35);
+    backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);}}
+#atalhos.aberto {{display:grid; animation:surge .2s ease;}}
+#atalhos .caixa {{background:{CARTAO}; color:{TINTA}; border:1px solid {BORDA}; border-radius:16px; padding:18px 22px; min-width:300px;
+    box-shadow:0 30px 80px rgba(0,21,100,.35); font-size:.86rem; line-height:2; animation:subir .3s cubic-bezier(.2,.7,.2,1);}}
+#atalhos .tit {{font-weight:700; font-size:1rem; margin-bottom:4px;}}
+#atalhos .rod {{color:{CINZA}; font-size:.72rem; margin-top:6px;}}
+#atalhos kbd {{display:inline-grid; place-items:center; min-width:24px; height:22px; padding:0 6px; margin-right:10px; border-radius:6px;
+    font:600 .74rem {FONTE_TXT}; color:{TINTA}; background:{CAMPO}; border:1px solid {BORDA_IN}; box-shadow:inset 0 -2px 0 {BORDA_IN};}}
+.dica-atalho {{opacity:.8;}}
+.dica-atalho kbd {{font:600 .68rem {FONTE_TXT}; padding:0 5px; border-radius:4px; background:rgba(255,255,255,.15); border:1px solid rgba(255,255,255,.3);}}
 /* mapa de calor da janela: células que surgem em diagonal, como escamas virando */
 @keyframes escama {{
   0%   {{opacity:0; transform:perspective(500px) rotateX(-78deg) rotateZ(-6deg) scale(.55); filter:brightness(1.6);}}
@@ -882,6 +912,124 @@ _EFEITOS_JS = r"""
     ms.forEach(m => { if (m.type === "characterData" && m.target.parentElement?.matches(".kpi .v")) conta(m.target.parentElement); });
   }).observe(D.body, {childList: true, subtree: true, characterData: true});
   varre(D);
+
+  // ================================================================== interações extras
+  const calmo = P.matchMedia && P.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  D.documentElement.classList.add("fx-on");                 // os estilos que dependem deste script só valem com ele rodando
+
+  // 1) luz que segue o mouse nos cartões + inclinação 3D nos indicadores
+  const SEL_LUZ = "[class*='st-key-card'], .kpi, .gcard, .mini div";
+  D.addEventListener("pointermove", ev => {
+    const el = ev.target.closest && ev.target.closest(SEL_LUZ);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const x = (ev.clientX - r.left) / r.width, y = (ev.clientY - r.top) / r.height;
+    el.style.setProperty("--mx", (x * 100).toFixed(1) + "%");
+    el.style.setProperty("--my", (y * 100).toFixed(1) + "%");
+    if (!calmo && el.classList.contains("kpi")) {
+      el.style.transform = `perspective(700px) rotateX(${((.5 - y) * 7).toFixed(2)}deg) rotateY(${((x - .5) * 9).toFixed(2)}deg) translateY(-3px)`;
+    }
+  }, {passive: true});
+  D.addEventListener("pointerout", ev => {
+    const el = ev.target.closest && ev.target.closest(".kpi");
+    if (el && !el.contains(ev.relatedTarget)) el.style.transform = "";
+  }, {passive: true});
+
+  // 2) efeito de toque (onda) nos botões
+  D.addEventListener("pointerdown", ev => {
+    const b = ev.target.closest && ev.target.closest(".stButton button, .stDownloadButton button, [data-testid='stButtonGroup'] button, [role='tab']");
+    if (!b || calmo) return;
+    const r = b.getBoundingClientRect(), d = Math.max(r.width, r.height) * 1.4;
+    const o = D.createElement("span");
+    o.className = "onda-toque";
+    Object.assign(o.style, {width: d + "px", height: d + "px", left: (ev.clientX - r.left - d / 2) + "px", top: (ev.clientY - r.top - d / 2) + "px"});
+    b.classList.add("tem-onda");
+    b.appendChild(o);
+    setTimeout(() => o.remove(), 650);
+  }, {passive: true});
+
+  // 3) revelação ao rolar: cartões e seções aparecem quando entram na tela
+  const io = "IntersectionObserver" in P ? new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) { e.target.classList.add("revelado"); io.unobserve(e.target); }
+  }), {rootMargin: "0px 0px -40px 0px", threshold: .05}) : null;
+  function observaRevelar(raiz) {
+    if (!io) return;
+    raiz.querySelectorAll("[class*='st-key-card']:not(.revelado), .secao:not(.revelado)").forEach(el => io.observe(el));
+  }
+  if (io) D.documentElement.classList.add("rev-on");
+  observaRevelar(D);
+  new MutationObserver(() => observaRevelar(D)).observe(D.body, {childList: true, subtree: true});
+
+  // 4) barra de carregamento no topo enquanto o painel recalcula (o Streamlit marca os elementos como "stale")
+  const barra = D.createElement("div");
+  barra.id = "barra-carga";
+  D.body.appendChild(barra);
+  let pendente = false;
+  function checaCarga() {
+    pendente = false;
+    barra.classList.toggle("ativa", !!D.querySelector("[data-stale='true']"));
+  }
+  new MutationObserver(() => { if (!pendente) { pendente = true; requestAnimationFrame(checaCarga); } })
+    .observe(D.body, {subtree: true, attributes: true, attributeFilter: ["data-stale"]});
+
+  // 5) ondas de rádio animadas no cabeçalho
+  function ondas() {
+    const topo = D.querySelector(".st-key-topo");
+    if (!topo) { setTimeout(ondas, 400); return; }
+    if (topo.querySelector("canvas.ondas")) return;
+    const c = D.createElement("canvas");
+    c.className = "ondas";
+    topo.prepend(c);
+    const ctx = c.getContext("2d");
+    let t = 0;
+    function desenha() {
+      if (!c.isConnected) { setTimeout(ondas, 400); return; }
+      const w = c.clientWidth, h = c.clientHeight, dpr = P.devicePixelRatio || 1;
+      if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      const camadas = [[.10, 9, .010, 1.0], [.07, 13, .007, -.7], [.05, 6, .016, 1.6]];
+      camadas.forEach(([alfa, amp, freq, vel], k) => {
+        ctx.beginPath();
+        for (let x = 0; x <= w; x += 6) {
+          const y = h * (.55 + k * .12) + Math.sin(x * freq + t * vel) * amp * Math.sin(x / w * Math.PI);
+          x ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        }
+        const g = ctx.createLinearGradient(0, 0, w, 0);
+        g.addColorStop(0, `rgba(0,194,255,0)`); g.addColorStop(.5, `rgba(120,200,255,${alfa * 2.2})`); g.addColorStop(1, `rgba(123,92,255,0)`);
+        ctx.strokeStyle = g; ctx.lineWidth = 1.4; ctx.stroke();
+      });
+      if (!D.hidden) t += .035;
+      if (!calmo) requestAnimationFrame(desenha);
+    }
+    desenha();
+  }
+  ondas();
+
+  // 6) atalhos de teclado (? mostra a lista)
+  const ajuda = D.createElement("div");
+  ajuda.id = "atalhos";
+  ajuda.innerHTML = `<div class="caixa"><div class="tit">Atalhos de teclado</div>
+    <div><kbd>1</kbd> Visão geral</div><div><kbd>2</kbd> Projeções e cenários</div>
+    <div><kbd>D</kbd> Modo escuro / claro</div><div><kbd>P</kbd> Exportar PDF</div>
+    <div><kbd>T</kbd> Voltar ao topo</div><div><kbd>?</kbd> Mostrar / esconder esta lista</div>
+    <div class="rod">Esc fecha</div></div>`;
+  D.body.appendChild(ajuda);
+  ajuda.addEventListener("click", e => { if (e.target === ajuda) ajuda.classList.remove("aberto"); });
+  const clica = sel => { const b = D.querySelector(sel); if (b) b.click(); };
+  D.addEventListener("keydown", ev => {
+    const alvo = ev.target;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (alvo && (alvo.isContentEditable || /INPUT|TEXTAREA|SELECT/.test(alvo.tagName))) return;
+    if (D.querySelector("[data-testid='stDialog']") && ev.key !== "Escape") return;
+    const k = ev.key.toLowerCase();
+    if (k === "?" ) { ajuda.classList.toggle("aberto"); ev.preventDefault(); }
+    else if (k === "escape") ajuda.classList.remove("aberto");
+    else if (k === "d") clica(".st-key-tema_btn button");
+    else if (k === "p") clica(".st-key-pdf_btn button");
+    else if (k === "1" || k === "2") { const ts = D.querySelectorAll(".stTabs [role='tab']"); if (ts[+k - 1]) ts[+k - 1].click(); }
+    else if (k === "t") { const m = D.querySelector("[data-testid='stMain']") || D.scrollingElement; (m.scrollTo ? m : P).scrollTo({top: 0, behavior: "smooth"}); P.scrollTo({top: 0, behavior: "smooth"}); }
+  });
 })();
 """
 
@@ -1423,6 +1571,7 @@ def extras_visao(ems, serie, periodos, p0, p1, em_foco):
             layout(fig, 300, legenda=True)
             fig.update_yaxes(autorange="reversed", dtick=1, tickformat="d", ticksuffix="º", title_text="")
             fig.update_xaxes(tickangle=-45 if len(rot) > 8 else 0, tickfont=dict(size=10))
+            fig.update_layout(hovermode="x unified", hoverlabel=dict(namelength=-1)); fig.update_xaxes(showspikes=True, spikemode="across", spikethickness=1, spikedash="dot", spikecolor=CINZA)
             st.plotly_chart(fig, config=CFG, key="v_x_posicao")
 
     def participacao():
@@ -1809,6 +1958,7 @@ def pagina1():
                 if st.button("", icon=":material/open_in_full:", key="exp_curva", help="Expandir: mais anos, faixa e detalhes"):
                     janela_curva()
                 fig, _, _ = fig_curva(ss["cv_em"], anos_c, ss["cv_banda"], 300)
+                fig.update_layout(hovermode="x unified", hoverlabel=dict(namelength=-1)); fig.update_xaxes(showspikes=True, spikemode="across", spikethickness=1, spikedash="dot", spikecolor=CINZA)
                 st.plotly_chart(fig, config=CFG, key="v_curva")
     if mostra("calor"):
         with _cm:
@@ -1855,6 +2005,7 @@ def pagina1():
                                 hovertemplate="<b>" + NOME[e] + " · %{x}</b><br>%{y:,.0f} OPM%{customdata}<extra></extra>")
             layout(fig, 320, legenda=len(ems) > 1)
             fig.update_xaxes(tickangle=-45 if len(periodos) > 8 else 0, tickfont=dict(size=10), range=[-0.3, len(periodos) - 0.35])
+            fig.update_layout(hovermode="x unified", hoverlabel=dict(namelength=-1)); fig.update_xaxes(showspikes=True, spikemode="across", spikethickness=1, spikedash="dot", spikecolor=CINZA)
             st.plotly_chart(fig, config=CFG, key="v_linhas")
         st.markdown('<div class="rodape">OPM# = ouvintes por minuto (média), 05h–05h, todos os dias, ambos os sexos, Grande Salvador · Kantar IBOPE EasyMedia4. '
                     'Ano = média dos 10 bancos internos (jan–mar a out–dez), regra que reproduz o número oficial. # = amostra pequena no EasyMedia '
@@ -2625,7 +2776,7 @@ if st.session_state.pop("_abrir_pdf", False):
     st.session_state.pop("_pdf_bytes", None)
     janela_pdf()
 
-VERSAO_PAINEL = "23/10/2026 · v17 (mapa em escamas)"
+VERSAO_PAINEL = "23/10/2026 · v18 (interações)"
 _rodape = st.container(key="notas")
 with _rodape, st.expander("🧩 Visualizações da tela inicial"):
     st.markdown('<div class="vs">Marque o que deve aparecer na Visão geral. As padrão já vêm marcadas; para tirar uma '
@@ -2702,5 +2853,6 @@ Valores com **#** no EasyMedia têm amostra pequena e aparecem hachurados nas ba
 # faixa com a marca, no fim da página (depois de Atualizar dados e Notas)
 _rodape.markdown(f'<div class="rodape-marca"><img src="data:image/png;base64,{LOGO_B64}" alt="Rede Bahia"><div>'
                  f'<b>Painel de Audiência · Rádio</b> · Rede Bahia · Pesquisa e Inteligência<br>'
-                 f'Fonte: Kantar IBOPE EasyMedia4 (Rádio Recall) · versão {VERSAO_PAINEL} · Streamlit {st.__version__}{_aviso_tema}</div></div>',
+                 f'Fonte: Kantar IBOPE EasyMedia4 (Rádio Recall) · versão {VERSAO_PAINEL} · Streamlit {st.__version__}{_aviso_tema}'
+                 f'<br><span class="dica-atalho">Atalhos: pressione <kbd>?</kbd></span></div></div>',
                  unsafe_allow_html=True)
