@@ -10,6 +10,15 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+# tema fixo mesmo sem o .streamlit/config.toml (a pasta oculta às vezes não sobe pelo site do GitHub)
+for _k, _v in {"theme.base": "light", "theme.primaryColor": "#2a78d6", "theme.backgroundColor": "#f2f4f9",
+               "theme.secondaryBackgroundColor": "#ffffff", "theme.textColor": "#1f1f1e", "client.toolbarMode": "minimal"}.items():
+    try:
+        if st.get_option(_k) != _v:
+            st._config.set_option(_k, _v)
+    except Exception:
+        pass
+
 os.chdir(os.path.dirname(os.path.abspath(__file__)))   # caminhos relativos à pasta do app (Colab e Streamlit Cloud)
 import modelos as M  # noqa: E402
 
@@ -325,7 +334,7 @@ header[data-testid="stHeader"] * {{pointer-events:none !important;}}
 # ============================================================ dados
 def _assinatura_dados():
     """Muda sempre que um arquivo de dados ou o código de leitura muda: invalida o cache do carregamento."""
-    arqs = ["radio_movel.csv", "parametros.json", "modelos.py"] + glob.glob(os.path.join("dados", "*"))
+    arqs = ["radio_movel.csv", "parametros.json", "modelos.py"] + glob.glob(os.path.join("dados", "*")) + glob.glob("*.xlsx")
     return tuple(sorted((a, os.path.getmtime(a), os.path.getsize(a)) for a in arqs if os.path.exists(a)))
 
 
@@ -344,8 +353,10 @@ def aplicar_exclusoes(d, excluidos):
 
 
 def arquivos_fixos():
-    return sorted(a for a in glob.glob(os.path.join("dados", "*.xlsx")) + glob.glob(os.path.join("dados", "*.csv"))
-                  if not os.path.basename(a).startswith("~$"))
+    """Planilhas do EasyMedia em dados/ e também soltas na raiz do repositório (caso a pasta não tenha subido)."""
+    arqs = glob.glob(os.path.join("dados", "*.xlsx")) + glob.glob(os.path.join("dados", "*.csv"))
+    arqs += [a for a in glob.glob("*.xlsx") if not os.path.basename(a).lower().startswith(("~$", "resultado"))]
+    return sorted({a for a in arqs if not os.path.basename(a).startswith("~$")})
 
 
 @st.cache_data
@@ -594,6 +605,11 @@ def media_anual(q):
 
 
 # ============================================================ barra de título
+if MOVEL.empty or not any(len(q) for q in Q.values()):
+    st.error("**Nenhum dado de audiência encontrado.** O painel procura as planilhas do EasyMedia na pasta `dados/` "
+             "(ou soltas na raiz do repositório) e não achou nenhuma com dados da GFM e da Bahia FM. Confira se as "
+             "planilhas subiram para o GitHub e reinicie o app em Manage app → ⋮ → Reboot app.")
+    st.stop()
 ult_mov = MOVEL["fim"].max()
 ult_fech = max(q.index.max() for q in Q.values())
 with st.container(key="topo"):
@@ -2177,7 +2193,7 @@ if st.session_state.pop("_abrir_pdf", False):
     st.session_state.pop("_pdf_bytes", None)
     janela_pdf()
 
-VERSAO_PAINEL = "21/10/2026 · v9 (modo demonstração)"
+VERSAO_PAINEL = "23/10/2026 · v11 (tema fixo)"
 _rodape = st.container(key="notas")
 with _rodape, st.expander("🧩 Visualizações da tela inicial"):
     st.markdown('<div class="vs">Marque o que deve aparecer na Visão geral. As padrão já vêm marcadas; para tirar uma '
@@ -2194,7 +2210,13 @@ with _rodape, st.expander("🧩 Visualizações da tela inicial"):
         st.rerun()
     st.markdown('<div class="vs">★ padrão · ＋ visualização extra</div>', unsafe_allow_html=True)
 
-_rodape.markdown(f'<div class="vs" style="margin:2px 0 0">Versão do painel: {VERSAO_PAINEL} · Streamlit {st.__version__}</div>',
+try:
+    _tema_ok = str(st.get_option("theme.primaryColor") or "").lower() == "#2a78d6"
+except Exception:
+    _tema_ok = True
+_aviso_tema = ("" if _tema_ok else " · <b style='color:#b42318'>⚠️ .streamlit/config.toml não encontrado: o painel está com o tema "
+               "padrão do Streamlit (cores e botões fora do padrão)</b>")
+_rodape.markdown(f'<div class="vs" style="margin:2px 0 0">Versão do painel: {VERSAO_PAINEL} · Streamlit {st.__version__}{_aviso_tema}</div>',
                  unsafe_allow_html=True)
 with _rodape, st.expander("⚙ Atualizar dados"):
     pagina_atualizar()
