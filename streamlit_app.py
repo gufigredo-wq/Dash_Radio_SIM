@@ -302,6 +302,12 @@ header[data-testid="stHeader"] * {{pointer-events:none !important;}}
   ul.resumo li {{font-size:.8rem;}}
   [data-testid="stDialog"] [role="dialog"] {{width:96vw !important; max-width:96vw !important;}}
 }}
+/* o Streamlit puxa cada bloco de texto 1rem para cima (para compensar a margem do parágrafo); nos blocos feitos em HTML,
+   sem parágrafo, isso fazia o elemento seguinte cobrir a última linha (textos "cortados" e "achatados") */
+[data-testid="stMarkdownContainer"] {{margin-bottom:0 !important;}}
+[data-testid="stMarkdownContainer"] > p:last-child {{margin-bottom:0 !important;}}
+.vs {{line-height:1.45;}}
+.vt {{line-height:1.35;}}
 ul.resumo {{margin:6px 0 4px; padding:0; list-style:none; display:grid; gap:7px;}}
 ul.resumo li {{display:flex; gap:10px; align-items:flex-start; font-size:.86rem; color:{TINTA2}; line-height:1.55;
     animation:subir .45s cubic-bezier(.2,.7,.2,1) backwards;}}
@@ -864,7 +870,7 @@ _EFEITOS_JS = r"""
 })();
 """
 
-paginas = st.tabs(["📊 Visão geral", "🔮 Projeções e cenários"])
+paginas = st.tabs(["Visão geral", "Projeções e cenários"])
 
 if "nonce" not in st.session_state:
     st.session_state.nonce = 0
@@ -2560,7 +2566,7 @@ if st.session_state.pop("_abrir_pdf", False):
     st.session_state.pop("_pdf_bytes", None)
     janela_pdf()
 
-VERSAO_PAINEL = "23/10/2026 · v14"
+VERSAO_PAINEL = "23/10/2026 · v16 (textos sem corte)"
 _rodape = st.container(key="notas")
 with _rodape, st.expander("🧩 Visualizações da tela inicial"):
     st.markdown('<div class="vs">Marque o que deve aparecer na Visão geral. As padrão já vêm marcadas; para tirar uma '
