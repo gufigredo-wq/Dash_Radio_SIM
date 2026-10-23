@@ -320,6 +320,23 @@ ul.resumo .ic.neutro {{background:color-mix(in srgb, #2a78d6 14%, transparent); 
 .secao .ss {{font-size:.74rem; color:{CINZA};}}
 .secao .linha {{flex:1; height:1px; background:linear-gradient(90deg, rgba(42,120,214,.45), transparent); margin-left:6px;}}
 .kpi .spark {{display:block; width:100%; height:30px; margin:4px 0 2px;}}
+/* variação como "chip" */
+.kpi .up, .kpi .down {{display:inline-block; padding:0 7px; border-radius:999px; line-height:1.55;}}
+.kpi .up {{background:color-mix(in srgb, {SOBE} 14%, transparent);}}
+.kpi .down {{background:color-mix(in srgb, {DESCE} 14%, transparent);}}
+/* equalizador do título */
+@keyframes eqb {{ 0%,100% {{transform:scaleY(.35);}} 50% {{transform:scaleY(1);}} }}
+.eq {{display:inline-flex; gap:2px; align-items:flex-end; height:14px; margin-left:8px; vertical-align:-1px;}}
+.eq i {{display:block; width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#00c2ff,#7b5cff);
+    transform-origin:bottom; animation:eqb 1.1s ease-in-out infinite;}}
+.eq i:nth-child(2) {{animation-delay:.15s;}} .eq i:nth-child(3) {{animation-delay:.3s;}}
+.eq i:nth-child(4) {{animation-delay:.45s;}} .eq i:nth-child(5) {{animation-delay:.6s;}}
+/* rodapé com a marca */
+.st-key-notas [data-testid="stVerticalBlock"] {{gap:.25rem !important;}}
+.rodape-marca {{display:flex; align-items:center; gap:12px; margin:10px 0 6px; padding:10px 14px; border-radius:12px;
+    background:linear-gradient(110deg, #001564, #0b3fae); color:#b9c6ea; font-size:.72rem; line-height:1.5;}}
+.rodape-marca img {{height:30px; width:auto;}}
+.rodape-marca b {{color:#fff;}}
 .med {{display:inline-grid; place-items:center; min-width:26px; height:20px; padding:0 4px; border-radius:999px; font-size:.7rem;
     font-weight:700; color:#fff;}}
 .med.m1 {{background:linear-gradient(135deg,#f5c542,#d79a00);}}
@@ -719,7 +736,7 @@ ult_fech = max(q.index.max() for q in Q.values())
 with st.container(key="topo"):
     _c = st.columns([5.6, 2.5, 1.15, 1.15], vertical_alignment="center", gap="small")
     _c[0].markdown(f"""<div class="marca"><img class="logo" alt="Rede Bahia" src="data:image/png;base64,{LOGO_B64}">
-<div class="sep"></div><div><h1>Painel de Audiência · Rádio</h1>
+<div class="sep"></div><div><h1>Painel de Audiência · Rádio <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span></h1>
 <div class="sub">Bahia FM e GFM 90.1 · OPM# 05h–05h · todos os dias · Grande Salvador · Kantar IBOPE EasyMedia4 (Rádio Recall)</div></div></div>""",
                    unsafe_allow_html=True)
     _c[1].markdown(f"""<div class="meta"><span class="vivo"></span>Série <b>{rot_movel(MOVEL['fim'].min())} → {rot_movel(ult_mov)}</b><br>
@@ -847,7 +864,7 @@ _EFEITOS_JS = r"""
 })();
 """
 
-paginas = st.tabs(["Visão geral", "Projeções e cenários"])
+paginas = st.tabs(["📊 Visão geral", "🔮 Projeções e cenários"])
 
 if "nonce" not in st.session_state:
     st.session_state.nonce = 0
@@ -1629,6 +1646,12 @@ def pagina1():
                                                                     legend_traceorder="normal")
             fig.update_yaxes(categoryorder="array", categoryarray=rotulos, autorange="reversed", gridcolor="rgba(0,0,0,0)", tickfont=dict(size=11, color=TINTA))
             fig.update_xaxes(showticklabels=False, showgrid=False)
+            if len(rotulos) > 1:            # faixa suave atrás do período mais recente
+                k = len(rotulos) - 1
+                fig.add_shape(type="rect", xref="paper", x0=-.005, x1=1, yref="y", y0=k - .5, y1=k + .5, layer="below", line_width=0,
+                              fillcolor="rgba(42,120,214,.10)" if not ESCURO else "rgba(90,152,230,.14)")
+                fig.add_annotation(xref="paper", x=1, yref="y", y=k, text="mais recente", showarrow=False, xanchor="right",
+                                   font=dict(size=9, color="#2a78d6" if not ESCURO else "#8fb8f0"))
             st.plotly_chart(fig, config=CFG, key="v_barras")
 
     # ---- linha 2: média anual | ranking do último período escolhido (cada um pode ser tirado no rodapé)
@@ -1651,6 +1674,13 @@ def pagina1():
                                 hovertext=rot, hovertemplate="<b>" + NOME[e] + " · %{hovertext}</b><br>%{y:,.0f} OPM<br>vs média do ano anterior: %{text}<extra></extra>")
                 layout(fig, 330, legenda=len(ems) > 1).update_layout(barmode="group", bargroupgap=0.08)
                 fig.update_xaxes(type="category")
+                anos_x = sorted({str(a) for tr in fig.data for a in tr.x})
+                if anos_x:                  # o ano corrente é média parcial: fundo listrado e aviso
+                    k = len(anos_x) - 1
+                    fig.add_shape(type="rect", xref="x", x0=k - .5, x1=k + .5, yref="paper", y0=0, y1=1, layer="below", line_width=0,
+                                  fillcolor="rgba(42,120,214,.08)" if not ESCURO else "rgba(90,152,230,.12)")
+                    fig.add_annotation(xref="x", x=k, yref="paper", y=1.0, text="parcial", showarrow=False, yanchor="bottom",
+                                       font=dict(size=9, color="#2a78d6" if not ESCURO else "#8fb8f0"))
                 st.plotly_chart(fig, config=CFG, on_select="rerun", selection_mode="points", key=f"v_anual_{N}")
                 if sel_ano:
                     limpar_com_clique_fora(f"v_anual_{N}")
@@ -2530,7 +2560,7 @@ if st.session_state.pop("_abrir_pdf", False):
     st.session_state.pop("_pdf_bytes", None)
     janela_pdf()
 
-VERSAO_PAINEL = "23/10/2026 · v13 (visual: seções, minigráficos, medalhas)"
+VERSAO_PAINEL = "23/10/2026 · v14"
 _rodape = st.container(key="notas")
 with _rodape, st.expander("🧩 Visualizações da tela inicial"):
     st.markdown('<div class="vs">Marque o que deve aparecer na Visão geral. As padrão já vêm marcadas; para tirar uma '
@@ -2553,8 +2583,7 @@ except Exception:
     _tema_ok = True
 _aviso_tema = ("" if _tema_ok else " · <b style='color:#b42318'>⚠️ .streamlit/config.toml não encontrado: o painel está com o tema "
                "padrão do Streamlit (cores e botões fora do padrão)</b>")
-_rodape.markdown(f'<div class="vs" style="margin:2px 0 0">Versão do painel: {VERSAO_PAINEL} · Streamlit {st.__version__}{_aviso_tema}</div>',
-                 unsafe_allow_html=True)
+
 with _rodape, st.expander("⚙ Atualizar dados"):
     pagina_atualizar()
 
@@ -2604,3 +2633,9 @@ Valores com **#** no EasyMedia têm amostra pequena e aparecem hachurados nas ba
 - OPM é absoluto: se a Kantar atualizar o universo, o nível muda sem mudança real de audiência.
 - A previsão do Power BI (CAGR 2023–2025) é uma extrapolação, não uma meta. Na validação anual do estudo, ela errou cerca do dobro da Combinação.
 """)
+
+# faixa com a marca, no fim da página (depois de Atualizar dados e Notas)
+_rodape.markdown(f'<div class="rodape-marca"><img src="data:image/png;base64,{LOGO_B64}" alt="Rede Bahia"><div>'
+                 f'<b>Painel de Audiência · Rádio</b> · Rede Bahia · Pesquisa e Inteligência<br>'
+                 f'Fonte: Kantar IBOPE EasyMedia4 (Rádio Recall) · versão {VERSAO_PAINEL} · Streamlit {st.__version__}{_aviso_tema}</div></div>',
+                 unsafe_allow_html=True)
