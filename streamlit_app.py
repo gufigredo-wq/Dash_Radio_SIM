@@ -161,10 +161,10 @@ st.markdown(f"""<style>
     box-shadow:0 8px 24px rgba(0,21,100,.18);}}
 .bi-top::before {{content:""; position:absolute; inset:0; pointer-events:none;
     background:linear-gradient(105deg, transparent 35%, rgba(255,255,255,.10) 50%, transparent 65%);
-    background-size:200% 100%; animation:brilho 7s ease-in-out infinite;}}
+    background-size:200% 100%; animation:brilho 16s ease-in-out infinite;}}
 .bi-top::after {{content:""; position:absolute; left:0; right:0; bottom:0; height:3px;
     background:linear-gradient(90deg, #00c2ff, #2a78d6, #7b5cff, #00c2ff); background-size:200% 100%;
-    animation:brilho 6s linear infinite;}}
+    animation:brilho 18s linear infinite;}}
 .bi-top .marca {{display:flex; align-items:center; gap:14px; position:relative; z-index:1;}}
 .bi-top .logo {{height:44px; width:auto; display:block; filter:drop-shadow(0 2px 6px rgba(0,0,0,.25));}}
 .bi-top .sep {{width:1px; height:36px; background:rgba(255,255,255,.25);}}
@@ -215,7 +215,7 @@ st.markdown(f"""<style>
     padding:8px 11px; font-size:.72rem; color:{TINTA2}; animation:subir .45s both;}}
 .mini b {{display:block; font-size:1.05rem; color:{TINTA}; margin-top:2px; font-variant-numeric:tabular-nums;}}
 .vivo {{display:inline-block; width:7px; height:7px; border-radius:50%; background:#00c2ff; margin-right:6px;
-    box-shadow:0 0 0 0 rgba(0,194,255,.6); animation:pulso 1.8s ease-in-out infinite; vertical-align:middle;}}
+    box-shadow:0 0 0 0 rgba(0,194,255,.6); animation:pulso 3.6s ease-in-out infinite; vertical-align:middle;}}
 /* ---------- animações dos gráficos ---------- */
 @keyframes barY {{ from {{transform:scaleY(0);}} to {{transform:scaleY(1);}} }}
 @keyframes barX {{ from {{transform:scaleX(0);}} to {{transform:scaleX(1);}} }}
@@ -258,9 +258,9 @@ header[data-testid="stHeader"] * {{pointer-events:none !important;}}
     background:linear-gradient(110deg, #001564 0%, #062a8c 55%, #0b3fae 100%); box-shadow:0 8px 24px rgba(0,21,100,.18);}}
 .st-key-topo::before {{content:""; position:absolute; inset:0; pointer-events:none;
     background:linear-gradient(105deg, transparent 35%, rgba(255,255,255,.10) 50%, transparent 65%);
-    background-size:200% 100%; animation:brilho 7s ease-in-out infinite;}}
+    background-size:200% 100%; animation:brilho 16s ease-in-out infinite;}}
 .st-key-topo::after {{content:""; position:absolute; left:0; right:0; bottom:0; height:3px;
-    background:linear-gradient(90deg, #00c2ff, #2a78d6, #7b5cff, #00c2ff); background-size:200% 100%; animation:brilho 6s linear infinite;}}
+    background:linear-gradient(90deg, #00c2ff, #2a78d6, #7b5cff, #00c2ff); background-size:200% 100%; animation:brilho 18s linear infinite;}}
 .st-key-topo [data-testid="stHorizontalBlock"] {{position:relative; z-index:1;}}
 .st-key-topo .marca {{display:flex; align-items:center; gap:14px;}}
 .st-key-topo .logo {{height:44px; width:auto; display:block; filter:drop-shadow(0 2px 6px rgba(0,0,0,.25));}}
@@ -379,9 +379,9 @@ ul.resumo .ic.neutro {{background:color-mix(in srgb, #2a78d6 14%, transparent); 
 @keyframes eqb {{ 0%,100% {{transform:scaleY(.35);}} 50% {{transform:scaleY(1);}} }}
 .eq {{display:inline-flex; gap:2px; align-items:flex-end; height:14px; margin-left:8px; vertical-align:-1px;}}
 .eq i {{display:block; width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#00c2ff,#7b5cff);
-    transform-origin:bottom; animation:eqb 1.1s ease-in-out infinite;}}
-.eq i:nth-child(2) {{animation-delay:.15s;}} .eq i:nth-child(3) {{animation-delay:.3s;}}
-.eq i:nth-child(4) {{animation-delay:.45s;}} .eq i:nth-child(5) {{animation-delay:.6s;}}
+    transform-origin:bottom; animation:eqb 2.6s ease-in-out infinite;}}
+.eq i:nth-child(2) {{animation-delay:.35s;}} .eq i:nth-child(3) {{animation-delay:.7s;}}
+.eq i:nth-child(4) {{animation-delay:1.05s;}} .eq i:nth-child(5) {{animation-delay:1.4s;}}
 /* rodapé com a marca */
 .st-key-notas [data-testid="stVerticalBlock"] {{gap:.25rem !important;}}
 .rodape-marca {{display:flex; align-items:center; gap:12px; margin:10px 0 6px; padding:10px 14px; border-radius:12px;
@@ -999,7 +999,7 @@ _EFEITOS_JS = r"""
         g.addColorStop(0, `rgba(0,194,255,0)`); g.addColorStop(.5, `rgba(120,200,255,${alfa * 2.2})`); g.addColorStop(1, `rgba(123,92,255,0)`);
         ctx.strokeStyle = g; ctx.lineWidth = 1.4; ctx.stroke();
       });
-      if (!D.hidden) t += .035;
+      if (!D.hidden) t += .012;                       // ondas lentas
       if (!calmo) requestAnimationFrame(desenha);
     }
     desenha();
@@ -2776,7 +2776,7 @@ if st.session_state.pop("_abrir_pdf", False):
     st.session_state.pop("_pdf_bytes", None)
     janela_pdf()
 
-VERSAO_PAINEL = "23/10/2026 · v18 (interações)"
+VERSAO_PAINEL = "23/10/2026 · v19"
 _rodape = st.container(key="notas")
 with _rodape, st.expander("🧩 Visualizações da tela inicial"):
     st.markdown('<div class="vs">Marque o que deve aparecer na Visão geral. As padrão já vêm marcadas; para tirar uma '
