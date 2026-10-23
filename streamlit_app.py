@@ -302,6 +302,21 @@ header[data-testid="stHeader"] * {{pointer-events:none !important;}}
   ul.resumo li {{font-size:.8rem;}}
   [data-testid="stDialog"] [role="dialog"] {{width:96vw !important; max-width:96vw !important;}}
 }}
+/* mapa de calor da janela: células que surgem em diagonal, como escamas virando */
+@keyframes escama {{
+  0%   {{opacity:0; transform:perspective(500px) rotateX(-78deg) rotateZ(-6deg) scale(.55); filter:brightness(1.6);}}
+  60%  {{opacity:1; transform:perspective(500px) rotateX(12deg) rotateZ(1deg) scale(1.04); filter:brightness(1.15);}}
+  100% {{opacity:1; transform:none; filter:none;}}
+}}
+.hm {{display:grid; gap:3px; margin:6px 0 10px; font-variant-numeric:tabular-nums;}}
+.hm-c {{font-size:.66rem; color:{CINZA}; text-align:center; padding:2px 0; text-transform:lowercase;}}
+.hm-a {{font-size:.72rem; color:{TINTA2}; display:flex; align-items:center; justify-content:flex-end; padding-right:6px;}}
+.hm-x {{height:30px; border-radius:7px; display:grid; place-items:center; font-size:.7rem; font-weight:600;
+    transform-origin:50% 0; animation:escama .7s cubic-bezier(.2,.8,.2,1) backwards; animation-delay:var(--d, 0ms);
+    box-shadow:inset 0 -2px 0 rgba(0,0,0,.10), 0 1px 2px rgba(16,24,64,.08); transition:transform .15s, box-shadow .15s;}}
+.hm-x:hover {{transform:translateY(-2px) scale(1.06); box-shadow:0 6px 14px rgba(16,24,64,.22); z-index:2; position:relative;}}
+.hm-x.vazio {{background:transparent; box-shadow:inset 0 0 0 1px {BORDA};}}
+@media (max-width:640px) {{ .hm-x {{font-size:.56rem; height:26px; border-radius:5px;}} .hm {{gap:2px;}} }}
 /* o Streamlit puxa cada bloco de texto 1rem para cima (para compensar a margem do parágrafo); nos blocos feitos em HTML,
    sem parágrafo, isso fazia o elemento seguinte cobrir a última linha (textos "cortados" e "achatados") */
 [data-testid="stMarkdownContainer"] {{margin-bottom:0 !important;}}
@@ -1200,6 +1215,50 @@ def _estado_padrao(em_foco, ano_atual):
         ss["cv_em"] = em_foco
 
 
+def _cor_na_escala(t, escala):
+    """Cor de uma escala [[pos, '#rrggbb'], ...] na posição t (0–1), por interpolação linear."""
+    t = min(1.0, max(0.0, float(t)))
+    for (a, ca), (b, cb) in zip(escala[:-1], escala[1:]):
+        if t <= b:
+            f = 0 if b == a else (t - a) / (b - a)
+            c1 = [int(ca[i:i + 2], 16) for i in (1, 3, 5)]
+            c2 = [int(cb[i:i + 2], 16) for i in (1, 3, 5)]
+            return "#%02x%02x%02x" % tuple(round(x + (y - x) * f) for x, y in zip(c1, c2))
+    return escala[-1][1]
+
+
+def calor_html(tab, medida_k):
+    """Mapa de calor em HTML (uma célula por período), para a janela expandida: as células surgem em diagonal, uma a
+    uma, como escamas virando. Mesmas cores e valores do mapa do Plotly."""
+    t = tab.sort_index()
+    z = t.values.astype(float)
+    if medida_k == "OPM#":
+        vmin, vmax, escala = np.nanmin(z), np.nanmax(z), SEQ
+        fmt = lambda v: br(v)                                                     # noqa: E731
+    else:
+        lim = float(np.nanpercentile(np.abs(z), 95)) if np.isfinite(z).any() else 10
+        vmin, vmax, escala = -lim, lim, DIVERG
+        fmt = lambda v: f"{v:+.1f}%".replace(".", ",")                           # noqa: E731
+    amp = (vmax - vmin) or 1
+    ncol = z.shape[1]
+    cab = "".join(f'<div class="hm-c">{c}</div>' for c in t.columns)
+    linhas = ""
+    for i, (ano, row) in enumerate(zip(t.index, z)):
+        linhas += f'<div class="hm-a">{ano}</div>'
+        for j, v in enumerate(row):
+            atraso = (i + j) * 38                                                  # frente diagonal
+            if not np.isfinite(v):
+                linhas += f'<div class="hm-x vazio" style="--d:{atraso}ms"></div>'
+                continue
+            cor = _cor_na_escala((v - vmin) / amp, escala)
+            r_, g_, b_ = (int(cor[k:k + 2], 16) for k in (1, 3, 5))
+            claro = (0.299 * r_ + 0.587 * g_ + 0.114 * b_) > 150
+            linhas += (f'<div class="hm-x" style="--d:{atraso}ms; background:{cor}; color:{"#1f1f1e" if claro else "#ffffff"}" '
+                       f'title="{ano} · {t.columns[j]}: {fmt(v)}">{fmt(v)}</div>')
+    return (f'<div class="hm" style="grid-template-columns:44px repeat({ncol}, minmax(0, 1fr))">'
+            f'<div></div>{cab}{linhas}</div>')
+
+
 @_dialogo("Mapa de calor · detalhes")
 def janela_calor():
     ss = st.session_state
@@ -1228,7 +1287,7 @@ def janela_calor():
                 {pct(m_ult.mean() / m_ant - 1, 1, True) + f' vs mesmo período de {ultimo_ano - 1}' if pd.notna(m_ant) else ''}</div>
             <div>Períodos na série<b>{len(flat)}</b>desde {int(bruto.dropna(how='all').index.min())}</div></div>""",
                     unsafe_allow_html=True)
-    st.plotly_chart(fig_calor(tab, med, 34 * len(tab) + 70, texto=True), config=CFG, key="dlg_calor")
+    st.markdown(calor_html(tab, med), unsafe_allow_html=True)
     b = st.columns([1.2, 1.6, 1])
     b[0].download_button("⬇️ Exportar tabela (CSV)", tab.to_csv(sep=";", decimal=",").encode("utf-8-sig"),
                          f"audiencia_{em.replace(' ', '_')}.csv", "text/csv", key="dlg_dl_tab")
@@ -2566,7 +2625,7 @@ if st.session_state.pop("_abrir_pdf", False):
     st.session_state.pop("_pdf_bytes", None)
     janela_pdf()
 
-VERSAO_PAINEL = "23/10/2026 · v16 (textos sem corte)"
+VERSAO_PAINEL = "23/10/2026 · v17 (mapa em escamas)"
 _rodape = st.container(key="notas")
 with _rodape, st.expander("🧩 Visualizações da tela inicial"):
     st.markdown('<div class="vs">Marque o que deve aparecer na Visão geral. As padrão já vêm marcadas; para tirar uma '
