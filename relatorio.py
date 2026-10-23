@@ -129,8 +129,40 @@ class _Eixo:
 
 
 # ------------------------------------------------------------------------------------------------ plotly -> matplotlib
+def _tabela(ax, tab):
+    """Tabela simples: cabeçalho azul-claro, linhas alternadas, números alinhados à direita."""
+    ax.set_axis_off()
+    cols, linhas = tab["colunas"], tab["linhas"]
+    if not linhas:
+        return
+    t = ax.table(cellText=linhas, colLabels=cols, loc="upper left", cellLoc="left", colLoc="left", bbox=[0, 0, 1, 1])
+    t.auto_set_font_size(False)
+    t.set_fontsize(7.5)
+    for (i, j), cel in t.get_celld().items():
+        cel.set_edgecolor("#e3e7f0")
+        cel.set_linewidth(.5)
+        txt = cel.get_text().get_text()
+        if i == 0:
+            cel.set_facecolor("#eef3fd")
+            cel.get_text().set_fontweight("bold")
+            cel.get_text().set_color(TINTA2)
+        else:
+            cel.set_facecolor("#ffffff" if i % 2 else "#f8f9fc")
+            if txt.startswith("+"):
+                cel.get_text().set_color("#0a7a0a")
+            elif txt.startswith(("-", "−")) and len(txt) > 1:
+                cel.get_text().set_color("#b42318")
+        import re
+        nucleo = re.sub(r"( OPM/ano|/ano| OPM|%|º)$", "", txt.strip())
+        if i > 0 and j > 0 and re.fullmatch(r"[<>+\-−]?[\d.,]+", nucleo or "x"):
+            cel.get_text().set_horizontalalignment("right")
+            cel._loc = "right"
+
+
 def desenha(ax, fig):
-    """Desenha no `ax` a figura do Plotly (objeto ou dicionário)."""
+    """Desenha no `ax` a figura do Plotly (objeto ou dicionário) ou uma tabela ({"tabela": {...}})."""
+    if isinstance(fig, dict) and "tabela" in fig:
+        return _tabela(ax, fig["tabela"])
     import json as _json
     d = _json.loads(fig.to_json()) if hasattr(fig, "to_json") else fig
     d = _limpa(d)
@@ -342,6 +374,8 @@ def _cartoes(fig, cartoes, topo):
 
 
 def _horizontal(fig):
+    if isinstance(fig, dict):
+        return False
     try:
         return any(getattr(t, "orientation", None) == "h" for t in fig.data)
     except AttributeError:
@@ -350,7 +384,9 @@ def _horizontal(fig):
 
 def _altura(fig):
     """Altura do gráfico na página (fração de A4 deitado). Barras deitadas com muitos períodos ganham mais espaço,
-    até a página inteira, para que cada barra e o seu rótulo fiquem separados."""
+    até a página inteira, para que cada barra e o seu rótulo fiquem separados. Tabelas: conforme o nº de linhas."""
+    if isinstance(fig, dict) and "tabela" in fig:
+        return min(.8, .1 + (len(fig["tabela"]["linhas"]) + 1) * .033)
     if not _horizontal(fig):
         return .36
     try:
@@ -364,7 +400,7 @@ def _altura(fig):
     return min(.8, max(.36, .12 + n * .026))
 
 
-def _paginas(pdf, graficos, cartoes, cab, fonte, n_pag, filtros="", secao="", marca=None):
+def _paginas(pdf, graficos, cartoes, cab, fonte, n_pag, filtros="", secao="", marca=None, resumo=None):
     """Desenha uma sequência de páginas: a 1ª com seção/filtros e cartões; depois os gráficos, um embaixo do outro,
     cada um com a altura de que precisa (um gráfico que não cabe no espaço que sobra vai para a página seguinte)."""
     fila = list(graficos)
@@ -381,6 +417,14 @@ def _paginas(pdf, graficos, cartoes, cab, fonte, n_pag, filtros="", secao="", ma
             if filtros:
                 fig.text(.03, topo, filtros, fontsize=7.5, color=TINTA2, va="top")
                 topo -= .04
+            if resumo:                       # frases do resumo automático
+                fig.text(.03, topo, "Resumo", fontsize=10, fontweight="bold", color=TINTA, va="top")
+                topo -= .03
+                for frase in resumo:
+                    linhas_f = textwrap.wrap(frase, 175)
+                    fig.text(.04, topo, "•  " + "\n    ".join(linhas_f), fontsize=7.8, color=TINTA2, va="top", linespacing=1.35)
+                    topo -= .022 * len(linhas_f) + .008
+                topo -= .015
             topo -= _cartoes(fig, cartoes or [], topo)
         base_pag = .06
         colocou = 0
@@ -419,7 +463,7 @@ def _paginas(pdf, graficos, cartoes, cab, fonte, n_pag, filtros="", secao="", ma
 
 
 def gera_pdf(graficos, cartoes=None, titulo="Painel de Audiência", subtitulo="", logo_b64=None, fonte="", filtros="",
-             final=None, marca=None):
+             final=None, marca=None, resumo=None):
     """graficos: lista de (titulo, subtitulo, figura_plotly). cartoes: lista de (titulo, valor, descricao, cor).
     final: seção opcional que começa numa página nova no fim do relatório, ex. as projeções:
     {"titulo": "Projeções e metas", "cartoes": [...], "graficos": [...]}.
@@ -428,8 +472,8 @@ def gera_pdf(graficos, cartoes=None, titulo="Painel de Audiência", subtitulo=""
     cab = (titulo, subtitulo, logo_b64)
     with PdfPages(buf) as pdf:
         n = 0
-        if graficos or cartoes or not final:
-            n = _paginas(pdf, graficos, cartoes, cab, fonte, n, filtros=filtros, marca=marca)
+        if graficos or cartoes or resumo or not final:
+            n = _paginas(pdf, graficos, cartoes, cab, fonte, n, filtros=filtros, marca=marca, resumo=resumo)
         if final and (final.get("graficos") or final.get("cartoes")):
             _paginas(pdf, final.get("graficos", []), final.get("cartoes", []), cab, fonte, n,
                      secao=final.get("titulo", ""), marca=marca)

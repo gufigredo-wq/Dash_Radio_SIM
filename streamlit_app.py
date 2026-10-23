@@ -22,6 +22,29 @@ for _k, _v in {"theme.base": "light", "theme.primaryColor": "#2a78d6", "theme.ba
 os.chdir(os.path.dirname(os.path.abspath(__file__)))   # caminhos relativos à pasta do app (Colab e Streamlit Cloud)
 import modelos as M  # noqa: E402
 
+
+# ============================================================ modo de demonstração
+def _modo_demo():
+    """Demonstração com dados fictícios quando: Secrets tem modo = "demo", a variável PAINEL_MODO=demo está definida,
+    ou existe o arquivo MODO_DEMO na pasta do app. O mesmo código serve ao painel real e à demonstração."""
+    try:
+        if str(st.secrets.get("modo", "")).lower() == "demo":
+            return True
+    except Exception:
+        pass
+    return os.environ.get("PAINEL_MODO", "").lower() == "demo" or os.path.exists("MODO_DEMO")
+
+
+MODO_DEMO = _modo_demo()
+if MODO_DEMO:
+    # os dados fictícios são gerados na hora numa pasta própria (fora do Git), e o painel passa a trabalhar nela:
+    # nada de dado real é lido, e nada é gravado no GitHub
+    _pasta_demo = os.path.join(os.getcwd(), "demo_runtime")
+    if not os.path.exists(os.path.join(_pasta_demo, "parametros.json")):
+        import demo_dados
+        demo_dados.gera(_pasta_demo)
+    os.chdir(_pasta_demo)
+
 st.set_page_config(page_title="Painel de Audiência · Rádio", page_icon="📻", layout="wide",
                    initial_sidebar_state="collapsed")
 
@@ -250,6 +273,38 @@ header[data-testid="stHeader"] * {{pointer-events:none !important;}}
 .demo {{margin:10px 0 2px; padding:8px 14px; border-radius:10px; font-size:.8rem; color:#6b4e00; border:1px solid #f0c24b;
     background:repeating-linear-gradient(135deg, #fff6d6 0 14px, #fff0bf 14px 28px);}}
 .demo b {{color:#4a3600;}}
+/* ---------- celular ---------- */
+[data-testid="stMarkdownContainer"]:has(> table.rk) {{overflow-x:auto;}}
+@media (max-width:640px) {{
+  .block-container {{padding-left:.8rem !important; padding-right:.8rem !important;}}
+  .st-key-topo {{padding:10px .8rem 12px !important;}}
+  .st-key-topo .logo {{height:36px;}}
+  .st-key-topo h1 {{font-size:1rem;}}
+  .st-key-topo .sub {{font-size:.7rem;}}
+  .st-key-topo .meta {{text-align:left; font-size:.7rem;}}
+  .st-key-topo [data-testid="stColumn"]:nth-child(2) {{margin-top:4px;}}
+  .st-key-topo [data-testid="stHorizontalBlock"] {{flex-wrap:wrap !important; gap:6px 8px !important;}}
+  .st-key-topo [data-testid="stColumn"]:nth-child(1), .st-key-topo [data-testid="stColumn"]:nth-child(2) {{flex:1 1 100% !important; min-width:100% !important;}}
+  .st-key-topo [data-testid="stColumn"]:nth-child(3), .st-key-topo [data-testid="stColumn"]:nth-child(4) {{flex:1 1 calc(50% - 8px) !important;
+      min-width:0 !important; width:auto !important;}}
+  .st-key-tema_btn, .st-key-pdf_btn {{justify-content:flex-start;}}
+  .st-key-tema_btn button, .st-key-pdf_btn button {{width:100%; justify-content:center;}}
+  .kpis {{grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px;}}
+  .kpi {{padding:8px 10px 8px;}}
+  .kpi .v {{font-size:1.3rem;}}
+  .kpi .t {{font-size:.62rem;}}
+  .kpi .d {{font-size:.68rem;}}
+  [class*="st-key-card"] {{padding:10px 10px 4px !important;}}
+  [class*="st-key-card"]:hover {{transform:none;}}
+  .rk {{font-size:.74rem;}}
+  .rk td, .rk th {{padding:5px 4px;}}
+  .demo {{font-size:.72rem; padding:7px 10px;}}
+  ul.resumo li {{font-size:.8rem;}}
+  [data-testid="stDialog"] [role="dialog"] {{width:96vw !important; max-width:96vw !important;}}
+}}
+ul.resumo {{margin:4px 0 2px 2px; padding-left:18px;}}
+ul.resumo li {{font-size:.86rem; color:{TINTA2}; line-height:1.6; margin:2px 0;}}
+ul.resumo li b {{color:{TINTA};}}
 .st-key-tema_btn, .st-key-pdf_btn {{display:flex; justify-content:flex-end;}}
 .st-key-pdf_btn button {{background:rgba(255,255,255,.08) !important; color:#dbe4ff !important; border:1px solid rgba(255,255,255,.3) !important;
     border-radius:999px !important; padding:5px 15px !important; min-height:0 !important; white-space:nowrap; box-shadow:none !important;}}
@@ -387,6 +442,8 @@ def segredo(chave, padrao=None):
 
 def github_salvar(caminho, conteudo, msg):
     """Grava um arquivo no repositório do GitHub (Streamlit Cloud). Precisa de [github] token/repo/branch em secrets."""
+    if MODO_DEMO:
+        return None                                   # demonstração: nada é gravado no repositório
     cfg = segredo("github")
     if not cfg or not cfg.get("token") or not cfg.get("repo"):
         return None
@@ -551,6 +608,13 @@ def _sem_tags(t):
     return re.sub(r"<[^>]+>", "", str(t)).replace('"', "")
 
 
+def registra_tabela(chave, titulo, colunas, linhas, sub=""):
+    """Guarda uma tabela para o relatório em PDF (entra na lista de itens da janela de exportação)."""
+    if isinstance(st.session_state.get("_graf_run"), list):
+        st.session_state["_graf_run"].append({"chave": chave, "titulo": titulo, "sub": sub, "aba": st.session_state.get("_aba_atual", ""),
+                                              "fig": {"tabela": {"colunas": colunas, "linhas": linhas}}})
+
+
 def kpis(lista):
     if isinstance(st.session_state.get("_kpis_run"), list):
         st.session_state["_kpis_run"].append({"aba": st.session_state.get("_aba_atual", ""),
@@ -647,11 +711,12 @@ st.session_state["_graf_run"] = []
 st.session_state["_kpis_run"] = []
 
 # ---- visualizações da tela inicial: as padrão já vêm marcadas; as extras entram pelo rodapé (🧩 Visualizações)
-VIS_PADRAO = {"evolucao": "Evolução por período (barras)", "anual": "Média anual", "ranking": "Ranking do período",
+VIS_PADRAO = {"resumo": "Resumo em frases", "evolucao": "Evolução por período (barras)", "anual": "Média anual", "ranking": "Ranking do período",
               "curva": "Curva do ano", "calor": "Mapa de calor", "comparativo": "Comparativo em linhas"}
 VIS_EXTRA = {"share": "Share (SHT%) por banco", "alcance": "Alcance (ALCM#) por banco", "tmed": "Tempo médio de audição (TMED#)",
              "yoy": "Variação vs mesmo banco do ano anterior", "posicao": "Posição no ranking ao longo do tempo",
-             "participacao": "Participação entre as emissoras selecionadas", "sazonal": "Sazonalidade por banco (caixas)"}
+             "participacao": "Participação entre as emissoras selecionadas", "sazonal": "Sazonalidade por banco (caixas)",
+             "mk": "Tendência estatística (Mann-Kendall)"}
 VIS_TODAS = {**VIS_PADRAO, **VIS_EXTRA}
 if "vis_sel" not in st.session_state:
     _q = st.query_params.get("vis")
@@ -1270,13 +1335,136 @@ def extras_visao(ems, serie, periodos, p0, p1, em_foco):
             st.plotly_chart(fig, config=CFG, key="v_x_sazonal")
 
     funcs = {"share": share, "alcance": alcance, "tmed": tmed, "yoy": yoy, "posicao": posicao,
-             "participacao": participacao, "sazonal": sazonal}
+             "participacao": participacao, "sazonal": sazonal, "mk": lambda: bloco_tendencia(ems, p0, p1, serie)}
     for k in range(0, len(pedidas), 2):
         par = pedidas[k:k + 2]
         cols = st.columns(2) if len(par) == 2 else [st.container()]
         for col, cod in zip(cols, par):
             with col:
                 funcs[cod]()
+
+
+def _var_txt(a, b, rot):
+    if a is None or b is None or pd.isna(a) or pd.isna(b) or not b:
+        return None
+    v = a / b - 1
+    if abs(v) < .0005:
+        return f"estável vs {rot}"
+    return f"{'alta' if v > 0 else 'queda'} de {pct(abs(v), 1)} vs {rot}"
+
+
+def resumo_textos(ems):
+    """Frases automáticas sobre o último banco: variação das emissoras próprias, posição no ranking, média parcial do ano
+    e os maiores movimentos da concorrência. Servem para a tela e para o PDF."""
+    frases = []
+    fim = MOVEL["fim"].max()
+    f_ant, f_aa = fim - pd.DateOffset(months=1), fim - pd.DateOffset(years=1)
+    rk = _ranking(fim)
+    lugar = {r.emissora: k for k, r in rk.iterrows()}
+    for e in [x for x in ems if x in EMISSORAS] or EMISSORAS:
+        s_ = M.movel_serie(MOVEL, e)
+        v = s_.get(fim)
+        if v is None or pd.isna(v):
+            continue
+        partes = [p_ for p_ in (_var_txt(v, s_.get(f_ant), f"o banco anterior ({rot_movel(f_ant)})"),
+                                 _var_txt(v, s_.get(f_aa), f"o mesmo banco de {f_aa.year} ({rot_movel(f_aa)})")) if p_]
+        txt = f"<b>{NOME[e]}</b> marcou <b>{br(v)} OPM</b> em {rot_movel(fim)}" + (": " + " e ".join(partes) if partes else "") + "."
+        if e in lugar:
+            pos = lugar[e]
+            if pos == 1:
+                seg = rk.iloc[1] if len(rk) > 1 else None
+                txt += f" Lidera o ranking" + (f", {br(v - seg.opm)} OPM à frente de {NOME.get(seg.emissora, seg.emissora)}." if seg is not None else ".")
+            else:
+                ac = rk.loc[pos - 1]
+                txt += f" Está em <b>{pos}º</b> no ranking, {br(ac.opm - v)} OPM atrás de {NOME.get(ac.emissora, ac.emissora)}."
+        frases.append(txt)
+        ano = fim.year
+        meses = sorted(m for m in s_.index[(s_.index.year == ano) & (s_.index.month >= 3)].month)
+        if meses:
+            atual = s_[(s_.index.year == ano) & s_.index.month.isin(meses)].mean()
+            antes = s_[(s_.index.year == ano - 1) & s_.index.month.isin(meses)]
+            if len(antes) == len(meses):
+                d = atual / antes.mean() - 1
+                frases.append(f"Na média parcial de {ano}, {NOME[e]} tem {br(atual)} OPM, {pct(abs(d), 1)} "
+                              f"{'acima' if d > 0 else 'abaixo'} do mesmo período de {ano - 1}.")
+    # maiores movimentos entre as concorrentes (banco atual vs anterior)
+    ag = MOVEL[MOVEL["fim"] == fim].set_index("emissora")["opm"]
+    an = MOVEL[MOVEL["fim"] == f_ant].set_index("emissora")["opm"]
+    var = (ag / an - 1).dropna()
+    var = var[[i for i in var.index if i in CONCORRENTES and ag.get(i, 0) >= 3000]]
+    if len(var) >= 2:
+        alta, queda = var.idxmax(), var.idxmin()
+        txt = []
+        if var[alta] > 0:
+            txt.append(f"a maior alta foi da {NOME.get(alta, alta)} ({pct(var[alta], 1, True)})")
+        if var[queda] < 0:
+            txt.append(f"a maior queda, da {NOME.get(queda, queda)} ({pct(var[queda], 1, True)})")
+        if txt:
+            frases.append(f"Entre as concorrentes com mais de 3 mil OPM, " + "; ".join(txt) + f" vs {rot_movel(f_ant)}.")
+    return frases
+
+
+def mann_kendall(t, x):
+    """Teste de Mann-Kendall (tendência monotônica) e inclinação de Sen. t em anos. Devolve (S, z, p, inclinação/ano)."""
+    from scipy.stats import norm as _norm
+    x, t = np.asarray(x, float), np.asarray(t, float)
+    n = len(x)
+    s_ = sum(np.sign(x[j] - x[i]) for i in range(n - 1) for j in range(i + 1, n))
+    _, cont = np.unique(x, return_counts=True)
+    var = (n * (n - 1) * (2 * n + 5) - sum(c * (c - 1) * (2 * c + 5) for c in cont)) / 18
+    z = 0.0 if s_ == 0 else (s_ - np.sign(s_)) / np.sqrt(var)
+    p = 2 * (1 - _norm.cdf(abs(z)))
+    incl = np.median([(x[j] - x[i]) / (t[j] - t[i]) for i in range(n - 1) for j in range(i + 1, n) if t[j] != t[i]])
+    return s_, z, p, incl
+
+
+def bloco_tendencia(ems, p0, p1, serie):
+    """Tendência de cada emissora nos trimestres fechados do período (sem sobreposição entre os pontos)."""
+    ini = pd.Timestamp(p0) if not serie.startswith("Ano") else pd.Timestamp(int(p0), 1, 1)
+    fim = pd.Timestamp(p1) if not serie.startswith("Ano") else pd.Timestamp(int(p1), 12, 1)
+    ini = min(ini, fim - pd.DateOffset(years=3))       # pelo menos 3 anos (12 trimestres) para o teste ter poder
+    with cartao("Tendência estatística · Mann-Kendall",
+                f"trimestres fechados de {rot_movel(ini) if not serie.startswith('Ano') else ini.year} a "
+                f"{rot_movel(fim) if not serie.startswith('Ano') else fim.year} · inclinação de Sen em % ao ano"):
+        linhas, nomes, vals, cores, txts, tab_mk = [], [], [], [], [], []
+        for e in ems:
+            q = M.fechados(MOVEL, e)
+            if isinstance(q.index, pd.PeriodIndex):     # trimestre -> mês final do trimestre (ex.: 2026T3 -> set/2026)
+                q.index = q.index.to_timestamp(how="start") + pd.DateOffset(months=2)
+            q = q[(q.index >= ini - pd.DateOffset(months=2)) & (q.index <= fim)].dropna()
+            if len(q) < 6:
+                linhas.append(f"<tr><td>{NOME.get(e, e)}</td><td colspan=4 style='color:{CINZA}'>poucos trimestres no período "
+                              f"({len(q)}; são precisos 6)</td></tr>")
+                continue
+            t = np.array([d.year + (d.month - 1) / 12 for d in q.index])
+            _, z, p, incl = mann_kendall(t, q.values)
+            pct_ano = incl / q.mean()
+            sig = p < .05
+            rot = ("alta" if incl > 0 else "queda") if sig else "estável"
+            cor = (SOBE if incl > 0 else DESCE) if sig else CINZA
+            nomes.append(NOME.get(e, e)); vals.append(pct_ano * 100); cores.append(cor)
+            txts.append(f"{rot} · p={p:.3f}".replace(".", ","))
+            linhas.append(f"<tr><td><span style='color:{COR.get(e, CINZA)}'>■</span> {NOME.get(e, e)}</td>"
+                          f"<td class='n' style='color:{cor}; font-weight:700'>{rot}</td><td class='n'>{("+" if incl > 0 else "") + br(incl)} OPM/ano</td>"
+                          f"<td class='n'>{pct(pct_ano, 1, True)}/ano</td><td class='n'>{p:.3f}</td><td class='n'>{len(q)}</td></tr>".replace(f"{p:.3f}", f"{p:.3f}".replace(".", ",")))
+            tab_mk.append([NOME.get(e, e), rot, f"{("+" if incl > 0 else "") + br(incl)} OPM/ano", f"{pct(pct_ano, 1, True)}/ano", f"{p:.3f}".replace(".", ","), str(len(q))])
+        if nomes:
+            fig = go.Figure(go.Bar(y=nomes, x=vals, orientation="h", marker_color=cores, text=txts, textposition="outside",
+                                   cliponaxis=False, hovertemplate="<b>%{y}</b><br>%{x:+.1f}% ao ano · %{text}<extra></extra>"))
+            layout(fig, 60 + 34 * len(nomes))
+            fig.update_xaxes(ticksuffix="%", zeroline=True, zerolinecolor=ZERO, showgrid=True, gridcolor=GRADE)
+            fig.update_yaxes(autorange="reversed")
+            st.plotly_chart(fig, config=CFG, key="v_x_mk")
+        if tab_mk:
+            registra_tabela("t_mk", "Tendência estatística · Mann-Kendall",
+                            ["Emissora", "Tendência", "Sen (OPM/ano)", "% ao ano", "p-valor", "trimestres"], tab_mk,
+                            sub="trimestres fechados do período · significativa se p < 0,05")
+        st.markdown("<table class='rk'><tr><th>Emissora</th><th class='n'>Tendência</th><th class='n'>Sen (OPM/ano)</th>"
+                    "<th class='n'>% ao ano</th><th class='n'>p-valor</th><th class='n'>trimestres</th></tr>" + "".join(linhas) +
+                    "</table>", unsafe_allow_html=True)
+        st.markdown(f'<div class="vs" style="margin-top:6px">Alta ou queda = tendência significativa a 95% (p &lt; 0,05); '
+                    f'estável = a variação no período não se distingue de oscilação. Usa só trimestres fechados, que não se '
+                    f'sobrepõem como os bancos móveis.</div>', unsafe_allow_html=True)
 
 
 def _dupla(a, b, larg=(1.15, 1)):
@@ -1345,6 +1533,11 @@ def pagina1():
             lista.append((f"{NOME[e]} · ranking {rot_movel(ult)}", f"{pos}º", f"de {len(rk)} · {dsc}", COR[e]))
         lista.append(cartao_media(e, s, ano, nb, COR[e]))
     kpis(lista)
+    frases = resumo_textos(ems)
+    st.session_state["_resumo_run"] = [_sem_tags(f_) for f_ in frases]
+    if mostra("resumo") and frases:
+        with cartao("Resumo", f"gerado a partir dos números de {rot_movel(MOVEL['fim'].max())}"):
+            st.markdown('<ul class="resumo">' + "".join(f"<li>{f_}</li>" for f_ in frases) + "</ul>", unsafe_allow_html=True)
 
     if mostra("evolucao"):
         # ---- gráfico principal: barras horizontais por período (padrão do slide "Evolução trimestral")
@@ -1425,6 +1618,13 @@ def pagina1():
                             f'<th style="text-align:right">Δ banco ant.<br>{rot_movel(f_ant)}</th>'
                             f'<th style="text-align:right">Δ ano ant.<br>{rot_movel(f_aa)}</th><th></th></tr>'
                             f'{linhas}</table>', unsafe_allow_html=True)
+                _fmt_d = lambda v: "–" if pd.isna(v) else ("+" if v > 0 else "") + br(v)   # noqa: E731
+                registra_tabela("t_ranking", f"Ranking · {rot_movel(fim_rk)}",
+                                ["", "Emissora", "OPM#", f"Δ vs {rot_movel(f_ant)}", f"Δ vs {rot_movel(f_aa)}"],
+                                [[f"{pos}º", NOME.get(r.emissora, r.emissora) + (" #" if r.amostra_baixa else ""), br(r.opm),
+                                  _fmt_d(r.opm - antes.get(r.emissora, np.nan)), _fmt_d(r.opm - ano_ant.get(r.emissora, np.nan))]
+                                 for pos, r in rk2.head(12).iterrows()],
+                                sub="todas as emissoras medidas · Δ = diferença de OPM# vs banco anterior e vs mesmo banco do ano anterior")
 
     # ---- linha 3: curva do ano | mapa de calor (emissora em foco)
     if mostra("curva") or mostra("calor") or mostra("sazonal"):
@@ -1708,6 +1908,8 @@ def pagina2():
                                f'<td style="width:38%"><div class="bar" style="width:{pr * 100:.1f}%; background:{COR[e]}"></div></td></tr>')
                 st.markdown(f'<table class="rk"><tr><th>Patamar (OPM#)</th><th style="text-align:right">Chance</th><th>Frequência</th><th></th></tr>'
                             f'{linhas}</table>', unsafe_allow_html=True)
+                registra_tabela("t_patamar", f"Chance por patamar · {ano_alvo} · {NOME[e]}", ["Patamar (OPM#)", "Chance", "Frequência"],
+                                [[br(g), fmt_p(float(np.mean(v >= g))), freq(float(np.mean(v >= g)))] for g in c + 500 * np.arange(-4, 5)])
     with l2[1]:
         with cartao("Validação do método", f"erro médio por horizonte · {p['n_origens']} origens"):
             ing = rodar_projecao(e, "Ingênuo (repete o último)", str(ate), h, usar_now, False)["validacao"]
@@ -1969,6 +2171,60 @@ def gerenciar_bancos(tem_senha):
                         _recarrega("Todos os bancos excluídos foram restaurados.")
 
 
+def valida_envio(lidos, nomes_arq):
+    """Checagens do envio antes de aplicar. Devolve (críticos, alertas): críticos bloqueiam o botão até a pessoa confirmar."""
+    import difflib
+    criticos, alertas = [], []
+    todos = pd.concat(lidos, ignore_index=True) if lidos else pd.DataFrame()
+    if todos.empty:
+        return criticos, alertas
+    # 1) mesmo banco e emissora com valores diferentes (em arquivos diferentes ou repetido no mesmo arquivo)
+    dup = todos.groupby(["emissora", "fim"])["opm"].agg(["nunique", "count"])
+    conflito = dup[dup["nunique"] > 1]
+    if len(conflito):
+        ex = ", ".join(f"{NOME.get(e, e)} {rot_movel(f)}" for e, f in conflito.index[:4])
+        criticos.append(f"{len(conflito)} período(s) aparecem com valores diferentes nos arquivos enviados ({ex}"
+                        f"{'…' if len(conflito) > 4 else ''}). Vale o último arquivo da lista.")
+    # 2) OPM# maior que o alcance: quase sempre coluna trocada (alcance lido como OPM#, ou o contrário)
+    if "alcance" in todos:
+        al = pd.to_numeric(todos["alcance"], errors="coerce")
+        troca = todos[(al.notna()) & (todos["opm"] > al)]
+        if len(troca):
+            criticos.append(f"Em {len(troca)} linha(s), o OPM# é maior que o alcance (ALCM#), o que não é possível: as colunas "
+                            f"parecem trocadas (ex.: {NOME.get(troca.iloc[0]['emissora'], troca.iloc[0]['emissora'])} "
+                            f"{rot_movel(troca.iloc[0]['fim'])}).")
+    # 3) valores impossíveis
+    if (todos["opm"] <= 0).any():
+        criticos.append(f"{int((todos['opm'] <= 0).sum())} linha(s) com OPM# zero ou negativo.")
+    if "sht" in todos:
+        sh = pd.to_numeric(todos["sht"], errors="coerce")
+        if ((sh < 0) | (sh > 100)).any():
+            criticos.append(f"{int(((sh < 0) | (sh > 100)).sum())} linha(s) com share fora de 0–100%.")
+    # 4) períodos no futuro
+    hoje = pd.Timestamp.today().normalize().replace(day=1)
+    fut = todos[todos["fim"] > hoje]
+    if len(fut):
+        criticos.append(f"{fut['fim'].nunique()} período(s) depois do mês atual ({rot_movel(fut['fim'].min())}…): confira a data da planilha.")
+    # 5) emissoras que a base ainda não conhece (pode ser grafia diferente da mesma emissora)
+    conhecidas = set(MOVEL["emissora"].unique())
+    for e in sorted(set(todos["emissora"]) - conhecidas):
+        parecida = difflib.get_close_matches(e, list(conhecidas), n=1, cutoff=.75)
+        alertas.append(f"Emissora nova na base: <b>{e}</b>" + (f" — é a mesma que <b>{NOME.get(parecida[0], parecida[0])}</b>? "
+                                                                  f"Nomes diferentes viram séries separadas." if parecida else "."))
+    # 6) valores já existentes que mudam muito (revisão grande do EasyMedia ou arquivo errado)
+    base = MOVEL.set_index(["emissora", "fim"])["opm"]
+    grandes = {}
+    for (e, f), v in todos.drop_duplicates(["emissora", "fim"], keep="last").set_index(["emissora", "fim"])["opm"].items():
+        antes = base.get((e, f))
+        if antes and abs(v / antes - 1) > .5:
+            grandes.setdefault(e, []).append((f, antes, v))
+    for e, lst in grandes.items():
+        f, antes, v = lst[0]
+        alertas.append(f"{NOME.get(e, e)}: {len(lst)} período(s) mudam mais de 50% em relação à base — ex.: {rot_movel(f)} "
+                       f"passa de {br(antes)} para {br(v)} ({pct(v / antes - 1, 0, True)}).")
+    return criticos, alertas
+
+
 def pagina_atualizar():
     if st.session_state.get("msg_ok"):
         st.success(st.session_state.pop("msg_ok"))
@@ -1984,10 +2240,13 @@ def pagina_atualizar():
         lista.append(("Concorrência", f"{len(CONCORRENTES)} emissoras", f"{rot_movel(sc['fim'].min())} → {rot_movel(sc['fim'].max())}", CINZA))
     lista.append(("Última atualização", meta.get("atualizado_em", "–"), meta.get("descricao", ""), CINZA))
     gh = (segredo("github") or {}).get("repo")
-    lista.append(("Onde fica salvo", "GitHub" if gh else ("Drive" if PAR.get("pasta_persistente") else "Só nesta sessão"),
+    lista.append(("Onde fica salvo", "Demonstração" if MODO_DEMO else ("GitHub" if gh else ("Drive" if PAR.get("pasta_persistente") else "Só nesta sessão")),
                   gh or PAR.get("pasta_persistente") or "perde-se quando o app reinicia", CINZA))
     kpis(lista)
-    if not gh and not PAR.get("pasta_persistente"):
+    if MODO_DEMO:
+        st.info("**Modo demonstração.** Os envios funcionam para teste, mas valem só nesta sessão do app e nunca vão para o "
+                "GitHub. Ao reiniciar, o painel volta aos dados fictícios originais.")
+    elif not gh and not PAR.get("pasta_persistente"):
         st.warning("**Os envios feitos aqui não ficam salvos.** Sem o bloco `[github]` em Settings → Secrets, a base atualizada "
                    "vale só até o app reiniciar (o Streamlit Cloud reinicia ao ficar parado e a cada mudança no código). "
                    "Configure o token do GitHub (veja o secrets_exemplo.toml) ou suba as planilhas na pasta `dados/` do repositório.")
@@ -2048,6 +2307,15 @@ def pagina_atualizar():
                         avisos.append("O arquivo só traz períodos novos de uma emissora.")
                     for av in avisos:
                         st.markdown(f'<div class="aviso">⚠️ {av}</div>', unsafe_allow_html=True)
+                    criticos, alertas = valida_envio(lidos, [u.name for u in ups])
+                    if not criticos and not alertas:
+                        st.markdown('<div class="vs" style="color:#0a7a0a">✅ Validação: nenhum problema encontrado nos arquivos.</div>',
+                                    unsafe_allow_html=True)
+                    for c_ in criticos:
+                        st.markdown(f'<div class="aviso" style="border-color:#e8a29b; background:#fdecea">⛔ {c_}</div>', unsafe_allow_html=True)
+                    for a_ in alertas:
+                        st.markdown(f'<div class="aviso">⚠️ {a_}</div>', unsafe_allow_html=True)
+                    confirma = (not criticos) or st.checkbox("Revisei os problemas acima e quero aplicar mesmo assim", key="up_conf")
                     if len(n) or len(a):
                         tab = pd.concat([n.assign(opm_antes=np.nan, tipo="novo"), a.assign(tipo="alterado")], ignore_index=True)
                         tab = pd.DataFrame({"Emissora": tab["emissora"].map(lambda x: NOME.get(x, x)), "Período": tab["fim"].map(rot_movel),
@@ -2056,7 +2324,7 @@ def pagina_atualizar():
                         st.dataframe(tab, hide_index=True, width="stretch", height=min(40 + 35 * len(tab), 320))
                     if tem_senha:
                         st.text_input("Senha", type="password", key="pw_up")
-                    pode = (len(n) or len(a) or not juntar)
+                    pode = (len(n) or len(a) or not juntar) and confirma
                     if st.button("Aplicar atualização", type="primary", disabled=not pode, key="bt_up"):
                         if not _senha_ok("pw_up"):
                             st.error("Senha incorreta.")
@@ -2072,8 +2340,11 @@ def pagina_atualizar():
                             salvar_base(m, f"upload: {', '.join(u.name for u in ups)}", excl)
                             _recarrega(f"Base atualizada: {len(n)} períodos novos e {len(a)} valores alterados. "
                                        "As projeções e validações foram refeitas com os dados novos.")
-                    if not pode:
+                    if not (len(n) or len(a) or not juntar):
                         st.markdown('<div class="vs">Nada para atualizar: a base já tem esses valores.</div>', unsafe_allow_html=True)
+                    elif not confirma:
+                        st.markdown('<div class="vs">Para aplicar, marque a confirmação acima depois de revisar os problemas.</div>',
+                                    unsafe_allow_html=True)
     with l[1]:
         with cartao("Versões anteriores", "Cada atualização guarda uma cópia da base anterior", nota=True):
             bks = sorted(glob.glob(os.path.join("backups", "radio_movel_*.csv")), reverse=True)
@@ -2134,6 +2405,7 @@ def pagina_atualizar():
 
 # =================================================================================== relatório em PDF
 st.session_state["_graf"] = st.session_state.get("_graf_run", [])
+st.session_state["_resumo"] = st.session_state.get("_resumo_run", [])
 st.session_state["_kpis"] = st.session_state.get("_kpis_run", [])
 
 
@@ -2164,6 +2436,7 @@ def janela_pdf():
         return gs, cs
 
     st.markdown("**Visão geral**")
+    com_resumo = bool(ss.get("_resumo")) and st.checkbox("Resumo em frases", value=True, key="pdf_resumo")
     escolhidos, cartoes = _itens("Visão geral", True, "pdf_vg")
     proj_g, proj_c = [], []
     if any(g["aba"] == "Projeções e cenários" for g in graf):
@@ -2180,6 +2453,7 @@ def janela_pdf():
                 subtitulo="Bahia FM e GFM 90.1 · OPM# 05h–05h · todos os dias · Grande Salvador · Kantar IBOPE EasyMedia4 (Rádio Recall)",
                 logo_b64=LOGO_B64, filtros=(("DEMONSTRAÇÃO · DADOS FICTÍCIOS · " if PAR.get("demo") else "") + ss.get("_filtros_txt", "")),
                 marca="DADOS FICTÍCIOS" if PAR.get("demo") else None,
+                resumo=ss.get("_resumo") if com_resumo else None,
                 fonte="Fonte: Kantar IBOPE EasyMedia4 (Rádio Recall) · relatório gerado pelo Painel de Audiência")
     if ss.get("_pdf_bytes"):
         c[1].download_button("⬇️ Baixar PDF", ss["_pdf_bytes"], file_name=f"painel_radio_{datetime.now():%Y%m%d_%H%M}.pdf",
@@ -2193,7 +2467,7 @@ if st.session_state.pop("_abrir_pdf", False):
     st.session_state.pop("_pdf_bytes", None)
     janela_pdf()
 
-VERSAO_PAINEL = "23/10/2026 · v11 (tema fixo)"
+VERSAO_PAINEL = "23/10/2026 · v12 (resumo, tendência, validação, celular)"
 _rodape = st.container(key="notas")
 with _rodape, st.expander("🧩 Visualizações da tela inicial"):
     st.markdown('<div class="vs">Marque o que deve aparecer na Visão geral. As padrão já vêm marcadas; para tirar uma '
