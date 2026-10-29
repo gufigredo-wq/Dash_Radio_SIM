@@ -1010,7 +1010,7 @@ _EFEITOS_JS = r"""
   const ajuda = D.createElement("div");
   ajuda.id = "atalhos";
   ajuda.innerHTML = `<div class="caixa"><div class="tit">Atalhos de teclado</div>
-    <div><kbd>1</kbd> Visão geral</div><div><kbd>2</kbd> Projeções e cenários</div>
+    <div><kbd>1</kbd> Visão geral</div><div><kbd>2</kbd> Projeções e cenários</div><div><kbd>3</kbd> Demográfico</div>
     <div><kbd>D</kbd> Modo escuro / claro</div><div><kbd>P</kbd> Exportar PDF</div>
     <div><kbd>T</kbd> Voltar ao topo</div><div><kbd>?</kbd> Mostrar / esconder esta lista</div>
     <div class="rod">Esc fecha</div></div>`;
@@ -1027,13 +1027,13 @@ _EFEITOS_JS = r"""
     else if (k === "escape") ajuda.classList.remove("aberto");
     else if (k === "d") clica(".st-key-tema_btn button");
     else if (k === "p") clica(".st-key-pdf_btn button");
-    else if (k === "1" || k === "2") { const ts = D.querySelectorAll(".stTabs [role='tab']"); if (ts[+k - 1]) ts[+k - 1].click(); }
+    else if (k === "1" || k === "2" || k === "3") { const ts = D.querySelectorAll(".stTabs [role='tab']"); if (ts[+k - 1]) ts[+k - 1].click(); }
     else if (k === "t") { const m = D.querySelector("[data-testid='stMain']") || D.scrollingElement; (m.scrollTo ? m : P).scrollTo({top: 0, behavior: "smooth"}); P.scrollTo({top: 0, behavior: "smooth"}); }
   });
 })();
 """
 
-paginas = st.tabs(["Visão geral", "Projeções e cenários"])
+paginas = st.tabs(["Visão geral", "Projeções e cenários", "Demográfico"])
 
 if "nonce" not in st.session_state:
     st.session_state.nonce = 0
@@ -2311,6 +2311,243 @@ with paginas[1]:
 st.session_state["_aba_atual"] = ""
 
 
+# =================================================================================== PÁGINA 3 · demográfico (zonas e perfil)
+import demografico as DM  # noqa: E402
+
+
+@st.cache_data
+def carregar_demografico(assinatura=None):
+    return DM.carregar()
+
+
+def _assinatura_demo():
+    arqs = glob.glob(os.path.join(DM.PASTA, "*.xlsx"))
+    return tuple(sorted((a, os.path.getmtime(a), os.path.getsize(a)) for a in arqs if os.path.exists(a)))
+
+
+DEMO = carregar_demografico(_assinatura_demo())
+
+
+def _fmt_var(v, metrica):
+    if v is None or pd.isna(v):
+        return "–"
+    return (f"{v:+.1f} p.p." if metrica in DM.EM_PONTOS else f"{v:+.1f}%").replace(".", ",")
+
+
+def fig_calor_demo(tab, metrica, h, variacao=False):
+    """Mapa de calor emissora × segmento: níveis (escala sequencial) ou variação (divergente, zero no centro)."""
+    t = tab.copy()
+    t.index = [NOME.get(e, e) for e in t.index]
+    z = t.values.astype(float)
+    if variacao:
+        lim = float(np.nanpercentile(np.abs(z), 95)) if np.isfinite(z).any() else 10
+        suf = " p.p." if metrica in DM.EM_PONTOS else "%"
+        kw = dict(colorscale=DIVERG, zmid=0, zmin=-lim, zmax=lim,
+                  colorbar=dict(thickness=10, outlinewidth=0, tickfont=dict(size=10), ticksuffix=suf),
+                  hovertemplate="<b>%{y}</b> · %{x}<br>%{z:+.1f}" + suf + "<extra></extra>")
+        txt = [[("" if pd.isna(v) else f"{v:+.1f}".replace(".", ",")) for v in r] for r in z]
+    else:
+        fmt = ",.0f" if metrica in ("OPM#", "ALCM#") else ",.1f"
+        kw = dict(colorscale=SEQ, colorbar=dict(thickness=10, outlinewidth=0, tickfont=dict(size=10), tickformat=fmt),
+                  hovertemplate="<b>%{y}</b> · %{x}<br>%{z:" + fmt + "}<extra></extra>")
+        txt = [[("" if pd.isna(v) else br(v, 0 if metrica in ("OPM#", "ALCM#") else 1)) for v in r] for r in z]
+    fig = go.Figure(go.Heatmap(z=z, x=list(t.columns), y=list(t.index), xgap=2, ygap=2, text=txt, texttemplate="%{text}",
+                               textfont=dict(size=10), **kw))
+    layout(fig, h).update_yaxes(autorange="reversed", tickformat="", dtick=1, tickfont=dict(size=10))
+    fig.update_xaxes(tickangle=0, tickfont=dict(size=10), side="top")
+    return fig
+
+
+def pagina3():
+    if DEMO.empty:
+        st.info("**Sem dados demográficos.** Coloque as exportações do EasyMedia de zonas (OPM#/AFIN%/ALCM# por zona) e de perfil "
+                "(PS% por classe, idade e sexo) na pasta `dados/demografico/` do repositório, ou envie pela seção ⚙ Atualizar dados.")
+        return
+    fins = sorted(pd.Timestamp(f) for f in DEMO["fim"].unique())
+    faixas = sorted(DEMO["faixa"].unique(), reverse=True)        # 05-05 primeiro
+    f = st.columns([1.6, 1.6, 1.0, 1.2, 1.3])
+    fim = f[0].select_slider("Banco", options=fins, value=fins[-1], format_func=rot_movel, key="p3_fim")
+    ref_pad = DM.referencia_padrao(fins, fim)
+    opcoes_ref = [x for x in fins if x < fim]
+    ref = f[1].selectbox("Comparar com", opcoes_ref, index=opcoes_ref.index(ref_pad) if ref_pad in opcoes_ref else max(0, len(opcoes_ref) - 1),
+                         format_func=rot_movel, key=f"p3_ref_{fim:%Y%m}",
+                         help="Padrão: o mesmo banco do ano anterior (quando existe); senão, o banco anterior.") if opcoes_ref else None
+    faixa = f[2].selectbox("Faixa", faixas, key="p3_faixa", help="05-05 = dia inteiro (padrão do painel). 05-00 = 05h à meia-noite.")
+    emissoras_disp = [e for e in TODAS if e in DEMO["emissora"].unique()] + \
+                     [e for e in sorted(DEMO["emissora"].unique()) if e not in TODAS]
+    padrao = [e for e in ["GFM", "Bahia FM", "Piatã FM", "Itapoan FM"] if e in emissoras_disp]
+    if len(padrao) < 4:
+        padrao += [e for e in emissoras_disp if e not in padrao][:6 - len(padrao)]
+    ems = f[3].multiselect("Emissoras", emissoras_disp, default=padrao, format_func=NOME.get, key="p3_em",
+                           placeholder="Todas") or emissoras_disp
+    _idx_foco = next((i for i, e in enumerate(ems) if e in EMISSORAS), 0)      # começa numa emissora própria, mas qualquer uma pode ser o foco
+    em_foco = f[4].selectbox("Emissora em foco", ems, index=_idx_foco, format_func=NOME.get, key=f"p3_foco_{len(ems)}",
+                             help="Usada no perfil detalhado e na decomposição da variação por zona.")
+    st.session_state["_filtros_txt"] = (f"Demográfico · banco {rot_movel(fim)}" + (f" vs {rot_movel(ref)}" if ref else "") +
+                                        f" · faixa {faixa} · {', '.join(NOME.get(e, e) for e in ems)}")
+    dz = DEMO[DEMO["emissora"].isin(ems)]
+    tem_zona = (dz["tipo"] == "Zona").any()
+    tem_perfil = dz["tipo"].isin(["Classe", "Idade", "Sexo"]).any()
+
+    # ------------------------------------------------------------------ 1 · zonas
+    if tem_zona:
+        secao(1, "Audiência por zona da Grande Salvador", f"{rot_movel(fim)} · faixa {faixa} · OPM#, afinidade e alcance por zona")
+        part = DM.participacao(DEMO, fim, faixa).reindex(ems)
+        if em_foco in part.index and part.loc[em_foco].notna().any():
+            p = part.loc[em_foco]
+            afin = DM.tabela(DEMO, "AFIN%", fim, faixa).reindex([em_foco]).iloc[0] if (DEMO["metrica"] == "AFIN%").any() else None
+            kk = [(f"Zona mais forte · {NOME.get(em_foco, em_foco)}", p.idxmax(), f"{pct(p.max() / 100)} das emissoras medidas nessa zona", COR.get(em_foco, AZUL)),
+                  (f"Zona mais fraca · {NOME.get(em_foco, em_foco)}", p.idxmin(), f"{pct(p.min() / 100)} de participação", CINZA)]
+            if afin is not None and afin.notna().any():
+                kk.append(("Maior afinidade", afin.idxmax(), f"AFIN% {br(afin.max(), 0)} (100 = média da Grande Salvador)", VERDE))
+                kk.append(("Menor afinidade", afin.idxmin(), f"AFIN% {br(afin.min(), 0)}", VERMELHO))
+            if ref is not None:
+                tabd, res = DM.decomposicao(DEMO, MOVEL, em_foco, fim, ref, faixa)
+                if tabd is not None:
+                    kk.append((f"Variação vs {rot_movel(ref)}", pct(res["var_zonas_pct"] / 100, 1, True),
+                               f"soma das zonas · maior contribuição: {tabd.index[0]} ({_fmt_var(tabd['contrib_pp'].iloc[0], 'OPM#')[:-1]} p.p.)"
+                               if tabd["contrib_pp"].iloc[0] > 0 else
+                               f"soma das zonas · maior perda: {tabd.index[-1]} ({_fmt_var(tabd['contrib_pp'].iloc[-1], 'OPM#')[:-1]} p.p.)",
+                               SOBE if res["var_zonas_pct"] > 0 else DESCE))
+            kpis(kk)
+
+        c1, c2 = st.columns([1.25, 1])
+        with c1:
+            met = st.segmented_control("Métrica", ["OPM#", "AFIN%", "ALCM#"], default="OPM#", key="p3_met_zona",
+                                       help="OPM# = ouvintes por minuto na zona. AFIN% = afinidade (100 = a zona pesa na audiência o mesmo que "
+                                            "na população). ALCM# = alcance (pessoas diferentes que ouviram).") or "OPM#"
+            with cartao(f"{DM.ROTULO[met]} por zona", f"emissora × zona · {rot_movel(fim)} · faixa {faixa}"):
+                tab = DM.tabela(DEMO, met, fim, faixa).reindex(ems)
+                st.plotly_chart(fig_calor_demo(tab, met, 60 + 30 * len(tab)), config=CFG, key="v_d_zona_nivel")
+        with c2:
+            with cartao("Participação dentro de cada zona", f"OPM# da emissora ÷ soma das emissoras medidas na zona · {rot_movel(fim)}"):
+                fig = go.Figure()
+                for e in ems:
+                    if e in part.index and part.loc[e].notna().any():
+                        fig.add_bar(x=list(part.columns), y=part.loc[e].values, name=NOME.get(e, e), marker_color=COR.get(e, CINZA),
+                                    hovertemplate=f"<b>{NOME.get(e, e)}</b> · %{{x}}<br>%{{y:.1f}}% da zona<extra></extra>")
+                layout(fig, 60 + 30 * len(ems) if len(ems) > 8 else 330, legenda=True).update_layout(barmode="group")
+                fig.update_yaxes(ticksuffix="%")
+                fig.update_xaxes(tickangle=-30, tickfont=dict(size=10))
+                st.plotly_chart(fig, config=CFG, key="v_d_zona_part")
+
+        if ref is not None:
+            secao(2, "Quem cresceu e quem caiu em cada zona", f"{rot_movel(fim)} vs {rot_movel(ref)} · faixa {faixa}")
+            var = DM.variacao(DEMO, met, fim, ref, faixa).reindex([e for e in ems])
+            var = var[var.notna().any(axis=1)]
+            if var.empty:
+                st.markdown('<div class="vs">Sem o banco de comparação para as emissoras escolhidas.</div>', unsafe_allow_html=True)
+            else:
+                c1, c2 = st.columns([1.25, 1])
+                with c1:
+                    with cartao(f"Variação de {met} por zona", f"{'pontos (p.p.)' if met in DM.EM_PONTOS else '%'} · vermelho = caiu, azul = cresceu"):
+                        st.plotly_chart(fig_calor_demo(var, met, 60 + 30 * len(var), variacao=True), config=CFG, key="v_d_zona_var")
+                with c2:
+                    with cartao("Destaques por zona", "entre as emissoras selecionadas · quem mais subiu e quem mais caiu"):
+                        linhas = []
+                        for d_ in DM.destaques(var):
+                            linhas.append([d_["segmento"], f"{NOME.get(d_['sobe'], d_['sobe'])} ({_fmt_var(d_['v_sobe'], met)})",
+                                           f"{NOME.get(d_['cai'], d_['cai'])} ({_fmt_var(d_['v_cai'], met)})",
+                                           f"{d_['n_sobem']} sobem · {d_['n_caem']} caem"])
+                        tdf = pd.DataFrame(linhas, columns=["Zona", "Mais cresceu", "Mais caiu", "Saldo"])
+                        st.dataframe(tdf, hide_index=True, width="stretch", height=40 + 35 * len(tdf))
+                        registra_tabela("v_d_zona_dest", "Destaques por zona", list(tdf.columns), tdf.values.tolist(),
+                                        f"{rot_movel(fim)} vs {rot_movel(ref)}")
+                # decomposição: cruza com a base principal
+                tabd, res = DM.decomposicao(DEMO, MOVEL, em_foco, fim, ref, faixa)
+                if tabd is not None:
+                    with cartao(f"De onde veio a variação da {NOME.get(em_foco, em_foco)}",
+                                f"contribuição de cada zona (p.p.) para a variação do OPM# somado das zonas: {pct(res['var_zonas_pct'] / 100, 1, True)}"
+                                + (f" · base principal (todas as zonas): {pct(res['var_base_pct'] / 100, 1, True)}" if res.get("var_base_pct") is not None else "")):
+                        fig = go.Figure(go.Bar(x=tabd["contrib_pp"].values, y=list(tabd.index), orientation="h",
+                                               marker_color=[SOBE if v > 0 else DESCE for v in tabd["contrib_pp"].values],
+                                               customdata=np.stack([tabd["antes"].values, tabd["agora"].values, tabd["variacao_pct"].values, tabd["peso_pct"].values], axis=-1),
+                                               hovertemplate="<b>%{y}</b><br>%{customdata[0]:,.0f} → %{customdata[1]:,.0f} OPM (%{customdata[2]:+.1f}%)"
+                                                             "<br>contribuição: %{x:+.1f} p.p. · peso na emissora: %{customdata[3]:.0f}%<extra></extra>"))
+                        layout(fig, 60 + 28 * len(tabd)).update_xaxes(ticksuffix=" p.p.", zeroline=True, zerolinecolor=ZERO)
+                        fig.update_yaxes(autorange="reversed", tickformat="")
+                        st.plotly_chart(fig, config=CFG, key="v_d_zona_decomp")
+                        if res.get("cobertura_pct"):
+                            st.markdown(f'<div class="vs">As 8 zonas somam {pct(res["cobertura_pct"] / 100, 0)} do OPM# total da emissora na base principal '
+                                        f'({br(res["opm_base_fim"])} em {rot_movel(fim)}): o restante vem de ouvintes fora das zonas listadas.</div>',
+                                        unsafe_allow_html=True)
+
+    # ------------------------------------------------------------------ 3 · perfil
+    if tem_perfil:
+        n_sec = 3 if tem_zona else 1
+        secao(n_sec, "Perfil do ouvinte", f"PS% = como se distribui a audiência de cada emissora · {rot_movel(fim)} · faixa {faixa}")
+        tipo = st.segmented_control("Corte", ["Classe", "Idade", "Sexo"], default="Classe", key="p3_tipo") or "Classe"
+        tp = DM.tabela(DEMO, "PS%", fim, faixa, tipo).reindex(ems)
+        tp = tp[tp.notna().any(axis=1)]
+        if tipo == "Idade":
+            ordem = [c for c in ["15–19", "18–24", "25–29", "30–34", "35–39", "40–49", "50–59", "60–69", "70+"] if c in tp.columns]
+            tp = tp[ordem + [c for c in tp.columns if c not in ordem]]
+        c1, c2 = st.columns([1.25, 1])
+        with c1:
+            with cartao(f"Composição por {tipo.lower()}", "barras empilhadas: cada emissora soma 100%"):
+                fig = go.Figure()
+                pal = [AZUL, LARANJA, AQUA, AMARELO, MAGENTA, VERDE, VIOLETA, VERMELHO, CINZA]
+                for k, seg in enumerate(tp.columns):
+                    fig.add_bar(y=[NOME.get(e, e) for e in tp.index], x=tp[seg].values, name=str(seg), orientation="h",
+                                marker_color=pal[k % len(pal)], hovertemplate="<b>%{y}</b> · " + str(seg) + "<br>%{x:.1f}%<extra></extra>")
+                layout(fig, 60 + 30 * len(tp), legenda=True).update_layout(barmode="stack")
+                fig.update_xaxes(ticksuffix="%", range=[0, 100])
+                fig.update_yaxes(autorange="reversed", tickformat="")
+                st.plotly_chart(fig, config=CFG, key="v_d_perfil_comp")
+        with c2:
+            if ref is not None:
+                vp = DM.variacao(DEMO, "PS%", fim, ref, faixa, tipo).reindex(list(tp.index))
+                vp = vp[vp.notna().any(axis=1)]
+                with cartao(f"Mudança no perfil vs {rot_movel(ref)}", "em pontos percentuais · azul = ganhou peso, vermelho = perdeu"):
+                    if vp.empty:
+                        st.markdown('<div class="vs">Sem o banco de comparação.</div>', unsafe_allow_html=True)
+                    else:
+                        if tipo == "Idade":
+                            vp = vp[[c for c in tp.columns if c in vp.columns]]
+                        st.plotly_chart(fig_calor_demo(vp, "PS%", 60 + 30 * len(vp), variacao=True), config=CFG, key="v_d_perfil_var")
+            else:
+                with cartao("Perfil em foco", f"{NOME.get(em_foco, em_foco)} · {tipo.lower()}"):
+                    if em_foco in tp.index:
+                        fig = go.Figure(go.Bar(x=list(tp.columns), y=tp.loc[em_foco].values, marker_color=COR.get(em_foco, AZUL),
+                                               hovertemplate="%{x}<br>%{y:.1f}%<extra></extra>"))
+                        layout(fig, 300).update_yaxes(ticksuffix="%")
+                        st.plotly_chart(fig, config=CFG, key="v_d_perfil_foco")
+        # perfil completo da emissora em foco (classe + idade + sexo) vs. média das selecionadas
+        with cartao(f"Perfil completo · {NOME.get(em_foco, em_foco)} vs média das emissoras selecionadas",
+                    f"PS% em {rot_movel(fim)} · acima da média = o grupo pesa mais nessa emissora do que no conjunto"):
+            linhas = []
+            for t_ in ["Classe", "Idade", "Sexo"]:
+                tt = DM.tabela(DEMO, "PS%", fim, faixa, t_)
+                if tt.empty or em_foco not in tt.index:
+                    continue
+                med = tt.reindex(ems).mean(axis=0)
+                for seg in tt.columns:
+                    linhas.append([t_, seg, tt.loc[em_foco, seg], med[seg], tt.loc[em_foco, seg] - med[seg]])
+            if linhas:
+                tdf = pd.DataFrame(linhas, columns=["Corte", "Segmento", NOME.get(em_foco, em_foco), "Média", "Diferença (p.p.)"])
+                fig = go.Figure(go.Bar(x=tdf["Segmento"].astype(str) + "  ", y=tdf["Diferença (p.p.)"].values,
+                                       marker_color=[SOBE if v > 0 else DESCE for v in tdf["Diferença (p.p.)"].values],
+                                       customdata=tdf[[NOME.get(em_foco, em_foco), "Média", "Corte"]].values,
+                                       hovertemplate="<b>%{x}</b> (%{customdata[2]})<br>" + NOME.get(em_foco, em_foco) +
+                                                     ": %{customdata[0]:.1f}% · média: %{customdata[1]:.1f}%<br>diferença: %{y:+.1f} p.p.<extra></extra>"))
+                layout(fig, 300).update_yaxes(ticksuffix=" p.p.", zeroline=True, zerolinecolor=ZERO)
+                fig.update_xaxes(tickangle=-30, tickfont=dict(size=10))
+                st.plotly_chart(fig, config=CFG, key="v_d_perfil_dif")
+                registra_tabela("v_d_perfil_tab", f"Perfil completo · {NOME.get(em_foco, em_foco)}", list(tdf.columns),
+                                [[r[0], str(r[1]), br(r[2], 1), br(r[3], 1), _fmt_var(r[4], "PS%")] for r in tdf.values.tolist()], rot_movel(fim))
+
+    st.markdown('<div class="rodape">Zonas e perfil vêm das exportações demográficas do EasyMedia (Rádio Recall), por banco (trimestre móvel). '
+                'AFIN% = participação da zona na audiência da emissora ÷ participação da zona na população × 100. PS% = distribuição da audiência '
+                'da emissora pelo segmento (cada corte soma 100%). A soma das zonas não é o OPM# total da emissora: ouvintes fora das zonas '
+                'listadas ficam de fora. # = amostra pequena no EasyMedia (leia com cautela).</div>', unsafe_allow_html=True)
+
+
+with paginas[2]:
+    st.session_state["_aba_atual"] = "Demográfico"
+    pagina3()
+st.session_state["_aba_atual"] = ""
+
+
 # =================================================================================== PÁGINA 4 · atualizar dados
 def _grava_parametros(par, msg="Atualiza parâmetros pelo painel"):
     json.dump(par, open("parametros.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
@@ -2359,6 +2596,48 @@ def salvar_base(nova, descricao, excluidos=None):
     _grava_parametros(par, f"Atualiza parâmetros: {descricao}")
     if par.get("pasta_persistente"):
         nova.to_csv(os.path.join(par["pasta_persistente"], "radio_base.csv"), index=False)
+
+
+def _eh_demografico_upload(u):
+    """Planilha de zonas/perfil do EasyMedia (linha 'Agrupamento' com ZONA/CLASSE/IDADE/SEXO)."""
+    try:
+        import openpyxl
+        u.seek(0)
+        wb = openpyxl.load_workbook(u, data_only=True, read_only=True)
+        ok = any(DM.eh_demografico(ws.iter_rows(values_only=True, max_row=40)) for ws in wb.worksheets)
+        u.seek(0)
+        return ok
+    except Exception:
+        u.seek(0)
+        return False
+
+
+def _aplica_demograficos(ups, tem_senha):
+    """Mostra o que foi lido das planilhas demográficas e grava em dados/demografico/ (e no GitHub, se configurado)."""
+    for u in ups:
+        try:
+            d = DM.ler_arquivo(u, u.name)
+        except Exception as ex:
+            st.error(f"Não consegui ler {u.name}: {ex}")
+            continue
+        st.markdown(f'<div class="vs">🗺️ <b>{u.name}</b> (demográfico): {len(d)} valores · '
+                    + (f'{", ".join(sorted(d["tipo"].unique()))} · {d["emissora"].nunique()} emissoras · {rot_movel(d["fim"].min())} → {rot_movel(d["fim"].max())}' if len(d) else "nada reconhecido") + "</div>",
+                    unsafe_allow_html=True)
+    if tem_senha:
+        st.text_input("Senha", type="password", key="pw_demo")
+    if st.button("Guardar planilhas demográficas", type="primary", key="bt_demo"):
+        if not _senha_ok("pw_demo"):
+            st.error("Senha incorreta.")
+            return
+        os.makedirs(DM.PASTA, exist_ok=True)
+        for u in ups:
+            u.seek(0)
+            conteudo = u.read()
+            open(os.path.join(DM.PASTA, u.name), "wb").write(conteudo)
+            ok = github_salvar(f"{DM.PASTA}/{u.name}".replace(os.sep, "/"), conteudo, f"Planilha demográfica: {u.name}")
+            if ok is False:
+                st.session_state["msg_erro"] = "Não consegui gravar no GitHub (confira o token em Secrets). As planilhas valem só até o app reiniciar."
+        _recarrega(f"{len(ups)} planilha(s) demográfica(s) guardada(s) em {DM.PASTA}.")
 
 
 def _senha_ok(chave):
@@ -2572,8 +2851,11 @@ def pagina_atualizar():
                             'C = OPM#) e <b>ranking de concorrência</b> (uma linha de períodos, abaixo OPM# / SHT% / ALCM# / TMED# e uma linha por '
                             'emissora). Valores com # são marcados como amostra pequena.</div>', unsafe_allow_html=True)
             else:
-                lidos = []
+                lidos, demos = [], []
                 for u in ups:
+                    if u.name.lower().endswith(".xlsx") and _eh_demografico_upload(u):
+                        demos.append(u)
+                        continue
                     try:
                         d = M.ler_arquivo(u, u.name)
                     except Exception as ex:
@@ -2584,8 +2866,12 @@ def pagina_atualizar():
                                 + (f' · {", ".join(NOME.get(x, x) for x in d["emissora"].unique())} · '
                                    f'{rot_movel(d["fim"].min())} → {rot_movel(d["fim"].max())}' if len(d) else "") + "</div>",
                                 unsafe_allow_html=True)
+                if demos:
+                    _aplica_demograficos(demos, tem_senha)
                 novo = pd.concat(lidos, ignore_index=True).drop_duplicates(["emissora", "fim"], keep="last") if lidos else pd.DataFrame()
-                if novo.empty:
+                if novo.empty and demos:
+                    pass
+                elif novo.empty:
                     st.error("Nenhuma linha no formato do EasyMedia foi encontrada nos arquivos enviados.")
                 else:
                     modo = st.radio("Como aplicar", ["Juntar com a base atual (recomendado)", "Substituir a base inteira"],
@@ -2747,6 +3033,12 @@ def janela_pdf():
     st.markdown("**Visão geral**")
     com_resumo = bool(ss.get("_resumo")) and st.checkbox("Resumo em frases", value=True, key="pdf_resumo")
     escolhidos, cartoes = _itens("Visão geral", True, "pdf_vg")
+    demo_g, demo_c = [], []
+    if any(g["aba"] == "Demográfico" for g in graf):
+        st.markdown("**Demográfico**")
+        if st.toggle("Incluir zonas e perfil no relatório", value=False, key="pdf_demo"):
+            demo_g, demo_c = _itens("Demográfico", True, "pdf_dm")
+    escolhidos, cartoes = escolhidos + demo_g, cartoes + demo_c
     proj_g, proj_c = [], []
     if any(g["aba"] == "Projeções e cenários" for g in graf):
         st.markdown("**Projeções e cenários**")
@@ -2776,7 +3068,7 @@ if st.session_state.pop("_abrir_pdf", False):
     st.session_state.pop("_pdf_bytes", None)
     janela_pdf()
 
-VERSAO_PAINEL = "23/10/2026 · v20"
+VERSAO_PAINEL = "29/10/2026 · v21"
 _rodape = st.container(key="notas")
 with _rodape, st.expander("🧩 Visualizações da tela inicial"):
     st.markdown('<div class="vs">Marque o que deve aparecer na Visão geral. As padrão já vêm marcadas; para tirar uma '
