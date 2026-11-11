@@ -4,6 +4,7 @@ trimestre móvel mais recente como nowcast, margens a partir dos erros reais de 
 """
 import hashlib
 import os
+import re
 import pickle
 import warnings
 
@@ -521,6 +522,8 @@ def ler_arquivo(arq, nome=None):
         wb = openpyxl.load_workbook(arq, data_only=True, read_only=True)
         for ws in wb.worksheets:
             linhas = list(ws.iter_rows(values_only=True))
+            if eh_demografico(linhas):                    # zonas e perfil têm leitor próprio (ler_demografico)
+                continue
             org = f"{os.path.basename(str(nome))}:{ws.title}"
             largo = _largo_para_registros(linhas, org)
             recs += largo if largo else _linhas_para_registros(linhas, org)
@@ -555,3 +558,94 @@ def mesclar(base, novo):
     # o novo prevalece, mas colunas que ele não traz (ex.: share) ficam com o valor da base
     m = pd.concat([b, novo], ignore_index=True).groupby(chave, as_index=False, sort=False).last()
     return m.sort_values(chave).reset_index(drop=True), novos.reset_index(drop=True), alterados.reset_index(drop=True)
+
+# =================================================================================== demográfico (zonas e perfil)
+_GRUPOS_DEMO = ("ZONA ", "CLASSE ", "IDADE ", "SEXO ")
+
+
+def eh_demografico(linhas):
+    """Planilha do EasyMedia quebrada por zona ou por perfil (classe, idade, sexo): a linha "Agrupamento" traz
+    'SAL - ZONA …', 'SAL - CLASSE …' etc. em vez das métricas por período."""
+    for r in linhas[:20]:
+        if r and str(r[0] or "").strip().lower() == "agrupamento":
+            cab = [str(x or "").upper().replace("SAL -", "").replace("SAL-", "").strip() for x in r[1:]]
+            return sum(c.startswith(_GRUPOS_DEMO) for c in cab) >= 2
+    return False
+
+
+def nome_grupo(txt):
+    """'SAL - ZONA PERIF. DIST. NORTE' -> 'Periferia distante Norte'; 'SAL - IDADE 15/19' -> '15 a 19 anos'."""
+    t = str(txt).upper().replace("SAL -", "").replace("SAL-", "").strip()
+    if t.startswith("ZONA "):
+        z = t[5:].strip()
+        fixos = {"CENTRO/SUL": "Centro/Sul", "ITAPOA": "Itapuã", "LESTE": "Leste", "NORTE": "Norte", "OESTE": "Oeste",
+                 "MUNICÍPIOS - PERIFERIA": "Municípios (periferia)", "MUNICIPIOS - PERIFERIA": "Municípios (periferia)",
+                 "PERIF. DIST. NORTE": "Periferia distante Norte", "PERIF. DIST. OESTE": "Periferia distante Oeste"}
+        return "zona", fixos.get(z, z.title())
+    if t.startswith("CLASSE "):
+        return "classe", "Classe " + t[7:].strip()
+    if t.startswith("IDADE "):
+        i = t[6:].strip()
+        return "idade", (i.replace("/", " a ") + " anos") if "/" in i else i.replace("+", " anos ou mais")
+    if t.startswith("SEXO "):
+        return "sexo", t[5:].strip().capitalize()
+    return "outro", t.title()
+
+
+def ler_demografico(arq, nome=None, faixa_horaria="05-05"):
+    """Lê as planilhas de zonas (OPM#, AFIN%, ALCM# por zona) e de perfil (PS% por classe, idade e sexo) do EasyMedia,
+    com um ou vários bancos. Cada coluna é identificada pelo cabeçalho (período, faixa horária, métrica e grupo), com as
+    células mescladas preenchidas para a direita. Só a faixa horária pedida entra (05-05, a mesma do painel).
+    Devolve: emissora, inicio, fim, dimensao (zona/classe/idade/sexo), grupo, metrica, valor, amostra_baixa, origem."""
+    import openpyxl
+    nome = nome or (arq if isinstance(arq, str) else getattr(arq, "name", "arquivo"))
+    wb = openpyxl.load_workbook(arq, data_only=True, read_only=True)
+    recs = []
+    for ws in wb.worksheets:
+        linhas = [list(r) for r in ws.iter_rows(values_only=True)]
+        if not eh_demografico(linhas):
+            continue
+        ia = next(i for i, r in enumerate(linhas) if r and str(r[0] or "").strip().lower() == "agrupamento")
+        ncol = max(len(r) for r in linhas[:ia + 1])
+        per, faixa, met = [None] * ncol, [None] * ncol, [None] * ncol
+        metrica_unica = None
+        for r in linhas[:ia]:
+            atual = {"per": None, "faixa": None, "met": None}
+            for j in range(1, ncol):
+                v = r[j] if j < len(r) else None
+                t = str(v).strip() if v is not None else ""
+                if t:
+                    if _periodo(t):
+                        atual = {"per": _periodo(t), "faixa": None, "met": None}
+                    elif re.fullmatch(r"\d{2}-\d{2}", t):
+                        atual["faixa"] = t
+                    elif t.upper().replace(" ", "") in ("OPM#", "AFIN%", "ALCM#", "PS%", "SHT%", "TMED#"):
+                        atual["met"] = t.upper().replace(" ", "")
+                    else:
+                        atual = {"per": None, "faixa": None, "met": None}
+                if atual["per"]:
+                    per[j] = atual["per"]
+                if atual["faixa"]:
+                    faixa[j] = atual["faixa"]
+                if atual["met"]:
+                    met[j] = atual["met"]
+        if all(m is None for m in met):
+            metrica_unica = "PS%"
+        grupos = [nome_grupo(x) if x else (None, None) for x in (linhas[ia] + [None] * ncol)[:ncol]]
+        org = f"{os.path.basename(str(nome))}:{ws.title}"
+        for r in linhas[ia + 1:]:
+            a = r[0] if r else None
+            if not _eh_emissora(a):
+                continue
+            em = nome_emissora(a)
+            for j in range(1, min(len(r), ncol)):
+                dim, grupo = grupos[j]
+                if not grupo or not per[j] or (faixa[j] and faixa[j] != faixa_horaria):
+                    continue
+                v, baixa = _valor(r[j])
+                if v is None:
+                    continue
+                recs.append(dict(emissora=em, inicio=per[j][0], fim=per[j][1], dimensao=dim, grupo=grupo,
+                                 metrica=met[j] or metrica_unica, valor=v, amostra_baixa=baixa, origem=org))
+    d = pd.DataFrame(recs, columns=["emissora", "inicio", "fim", "dimensao", "grupo", "metrica", "valor", "amostra_baixa", "origem"])
+    return d.drop_duplicates(["emissora", "fim", "dimensao", "grupo", "metrica"], keep="last").reset_index(drop=True)
