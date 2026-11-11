@@ -1,4 +1,6 @@
 import glob
+from html import escape as html_escape
+import copy
 import json
 import os
 import re
@@ -21,6 +23,8 @@ for _k, _v in {"theme.base": "light", "theme.primaryColor": "#2a78d6", "theme.ba
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))   # caminhos relativos à pasta do app (Colab e Streamlit Cloud)
 import modelos as M  # noqa: E402
+import chat  # noqa: E402  (assistente do painel: IA com Gemini ou respostas prontas)
+import banco  # noqa: E402  (banco de dados da empresa, opcional: sem conexão configurada, lê os arquivos de dados/)
 
 
 # ============================================================ modo de demonstração
@@ -44,6 +48,103 @@ if MODO_DEMO:
         import demo_dados
         demo_dados.gera(_pasta_demo)
     os.chdir(_pasta_demo)
+
+
+# ============================================================ login corporativo, permissão e auditoria (biblioteca labs_streamlit da TI)
+from labs_streamlit import Usuario, auditar, obter_usuario, pode_fazer  # noqa: E402
+
+# permissão que libera as gravações, como vem no cabeçalho X-Forwarded-Modulos do gateway (padrão do Labs: "atualizar");
+# quem não a tem só consulta
+MODULO_PERMISSAO = "atualizar"
+
+
+# só na demonstração: perfis simulados para testar o login e as permissões sem o gateway do Labs
+PERFIS_DEMO = {
+    "Pode atualizar": Usuario(email="ana.pesquisa@redebahia.com.br", nome="Ana Pesquisa (simulação)", id="demo-1",
+                              modulos=frozenset({"acesso", "atualizar"})),
+    "Só consulta": Usuario(email="joao.jornalismo@redebahia.com.br", nome="João Jornalismo (simulação)", id="demo-2",
+                           modulos=frozenset({"acesso"})),
+    "Sem login": None,
+}
+
+
+def usuario_atual():
+    if MODO_DEMO:
+        return PERFIS_DEMO.get(st.session_state.get("perfil_demo") or "Pode atualizar")
+    """Usuário autenticado pelo gateway corporativo (cabeçalhos X-Forwarded-*). Fora do Labs, LABS_DEV_USER_EMAIL."""
+    try:
+        cab = dict(st.context.headers)
+    except Exception:
+        cab = {}
+    u = obter_usuario(cab)
+    if u is not None:          # cabeçalhos HTTP chegam como Latin-1: "JoÃ£o" (UTF-8 lido errado) volta a ser "João"
+        import dataclasses
+        u = dataclasses.replace(u, nome=_texto_utf8(u.nome), email=_texto_utf8(u.email))
+    return u
+
+
+def _texto_utf8(t):
+    try:
+        return t.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError, AttributeError):
+        return t
+
+
+def pode_gravar():
+    """Só grava quem tem a permissão "atualizar" (ou '*'). Na demonstração, vale o perfil simulado escolhido na tela."""
+    return pode_fazer(usuario_atual(), MODULO_PERMISSAO)
+
+
+def registra(acao, resultado="sucesso", **kw):
+    """Registra a gravação no journal de auditoria do Labs (fora do Labs, sem AUDIT_APP, não faz nada)."""
+    if MODO_DEMO:
+        return None
+    try:
+        return auditar(acao, usuario_atual(), resultado=resultado, modulo=MODULO_PERMISSAO, **kw)
+    except Exception:
+        return None
+
+
+def _sem_permissao(acao):
+    registra(acao, resultado="negado", recurso_tipo="painel", erro_codigo="sem_permissao_atualizar")
+    st.session_state["msg_erro"] = "Seu perfil permite apenas consulta."
+
+_PROFUNDIDADE = {"n": 0}
+
+
+def protegido(acao, recurso_tipo, detalhe=None):
+    """Envolve uma função que grava: confere a permissão antes e registra a gravação na auditoria depois
+    (uma vez só, mesmo quando uma gravação chama outra). `detalhe(*a, **k)` pode devolver outra ação/recurso
+    conforme o que está sendo gravado (ex.: rodada.upload com o nome do arquivo)."""
+    def deco(func):
+        def envolta(*a, **k):
+            info = dict(acao=acao, recurso_tipo=recurso_tipo, recurso_id=None, recurso_rotulo=None)
+            if detalhe:
+                try:
+                    info.update(detalhe(*a, **k) or {})
+                except Exception:
+                    pass
+            if _PROFUNDIDADE["n"] == 0 and not pode_gravar():
+                _sem_permissao(info["acao"])
+                return None
+            _PROFUNDIDADE["n"] += 1
+            try:
+                saida = func(*a, **k)
+            except Exception as ex:
+                if _PROFUNDIDADE["n"] == 1:
+                    registra(info["acao"], resultado="erro", recurso_tipo=info["recurso_tipo"], recurso_id=info["recurso_id"],
+                             erro_codigo=ex.__class__.__name__)
+                raise
+            finally:
+                _PROFUNDIDADE["n"] -= 1
+            if _PROFUNDIDADE["n"] == 0:
+                rot = info["recurso_rotulo"] or next((str(x) for x in list(a) + list(k.values()) if isinstance(x, str)), None)
+                registra(info["acao"], recurso_tipo=info["recurso_tipo"], recurso_id=info["recurso_id"], recurso_rotulo=rot)
+            return saida
+        envolta.__name__ = func.__name__
+        envolta.__doc__ = func.__doc__
+        return envolta
+    return deco
 
 st.set_page_config(page_title="Painel de Audiência · Rádio", page_icon="📻", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -477,6 +578,8 @@ ul.resumo .ic.neutro {{background:color-mix(in srgb, #2a78d6 14%, transparent); 
 # ============================================================ dados
 def _assinatura_dados():
     """Muda sempre que um arquivo de dados ou o código de leitura muda: invalida o cache do carregamento."""
+    if banco.ativo() and not MODO_DEMO:
+        return ("banco",) + banco.assinatura(["radio_audiencia", "painel_parametros"])
     arqs = ["radio_movel.csv", "parametros.json", "modelos.py"] + glob.glob(os.path.join("dados", "*")) + glob.glob("*.xlsx")
     return tuple(sorted((a, os.path.getmtime(a), os.path.getsize(a)) for a in arqs if os.path.exists(a)))
 
@@ -507,11 +610,18 @@ def carregar(versao=None, assinatura=None):
     """Base = planilhas do EasyMedia em dados/ + radio_movel.csv (envios feitos pela aba Atualizar dados, que prevalecem).
     Bancos excluídos pelo painel (lista "excluidos" em parametros.json) ficam fora do que o painel mostra."""
     d = pd.DataFrame(columns=M.COLUNAS)
-    for arq in arquivos_fixos():
-        d = M.mesclar(d, M.ler_arquivo(arq))[0]
-    if os.path.exists("radio_movel.csv"):
-        d = M.mesclar(d, pd.read_csv("radio_movel.csv", parse_dates=["inicio", "fim"]))[0]
-    par = json.load(open("parametros.json", encoding="utf-8")) if os.path.exists("parametros.json") else {}
+    if banco.ativo() and not MODO_DEMO:
+        # banco de dados da empresa: a aplicação de carga da TI grava a audiência; os parâmetros são editados no painel
+        d = banco.ler("radio_audiencia")
+        for c in ("inicio", "fim"):
+            d[c] = pd.to_datetime(d[c])
+        par = banco.parametros("radio", estrito=True)
+    else:                                   # só na demonstração: arquivos fictícios gerados em demo_runtime/
+        par = json.load(open("parametros.json", encoding="utf-8")) if os.path.exists("parametros.json") else {}
+        for arq in arquivos_fixos():
+            d = M.mesclar(d, M.ler_arquivo(arq))[0]
+        if os.path.exists("radio_movel.csv"):
+            d = M.mesclar(d, pd.read_csv("radio_movel.csv", parse_dates=["inicio", "fim"]))[0]
     d = d.reindex(columns=list(dict.fromkeys(list(d.columns) + M.COLUNAS)))      # garante as colunas novas (share, amostra…)
     d["amostra_baixa"] = d["amostra_baixa"].fillna(False).astype(bool)
     for c in ("opm", "sht", "alcance"):
@@ -520,38 +630,22 @@ def carregar(versao=None, assinatura=None):
     return aplicar_exclusoes(d, par.get("excluidos", [])), par, d
 
 
-def segredo(chave, padrao=None):
-    """Lê st.secrets sem quebrar quando não há arquivo de segredos (Colab)."""
-    try:
-        return st.secrets.get(chave, padrao)
-    except Exception:
-        return padrao
+def _nao_disponivel(motivo):
+    """Sem banco de dados: o painel avisa e para. Nunca volta para arquivos locais (a pasta dados/ não vai ao repositório)."""
+    st.error("**Não disponível.** Os dados do painel não puderam ser carregados do banco de dados. "
+             "Tente novamente em alguns minutos; se continuar, avise a TI.")
+    st.caption(f"Detalhe técnico: {motivo}")
+    st.stop()
 
 
-def github_salvar(caminho, conteudo, msg):
-    """Grava um arquivo no repositório do GitHub (Streamlit Cloud). Precisa de [github] token/repo/branch em secrets."""
+if not MODO_DEMO and not banco.ativo():
+    _nao_disponivel("conexão com o banco não configurada (variável PAINEL_DB_URL)")
+try:
+    MOVEL, PAR, BASE = carregar("v3-bancos", _assinatura_dados())
+except Exception as _ex:
     if MODO_DEMO:
-        return None                                   # demonstração: nada é gravado no repositório
-    cfg = segredo("github")
-    if not cfg or not cfg.get("token") or not cfg.get("repo"):
-        return None
-    import base64
-    import requests
-    url = f"https://api.github.com/repos/{cfg['repo']}/contents/{caminho}"
-    h = {"Authorization": f"Bearer {cfg['token']}", "Accept": "application/vnd.github+json"}
-    ramo = cfg.get("branch", "main")
-    try:
-        r = requests.get(url, headers=h, params={"ref": ramo}, timeout=20)
-        corpo = {"message": msg, "content": base64.b64encode(conteudo).decode(), "branch": ramo}
-        if r.status_code == 200:
-            corpo["sha"] = r.json()["sha"]
-        r = requests.put(url, headers=h, json=corpo, timeout=30)
-        return r.status_code in (200, 201)
-    except Exception:
-        return False
-
-
-MOVEL, PAR, BASE = carregar("v3-bancos", _assinatura_dados())
+        raise
+    _nao_disponivel(f"falha ao ler o banco ({_ex.__class__.__name__})")
 EMISSORAS = [e for e in ["Bahia FM", "GFM"] if e in MOVEL["emissora"].unique()]
 # concorrência: todas as outras emissoras da base, da maior para a menor audiência no último banco
 _ult = MOVEL.sort_values("fim").groupby("emissora")["opm"].last()
@@ -2317,15 +2411,30 @@ import demografico as DM  # noqa: E402
 
 @st.cache_data
 def carregar_demografico(assinatura=None):
+    if banco.ativo() and not MODO_DEMO:
+        d = banco.ler("radio_demografico").reindex(columns=DM.COLUNAS)
+        for c in ("inicio", "fim"):
+            d[c] = pd.to_datetime(d[c])
+        return d
     return DM.carregar()
 
 
 def _assinatura_demo():
+    if banco.ativo() and not MODO_DEMO:
+        return ("banco",) + banco.assinatura(["radio_demografico"])
     arqs = glob.glob(os.path.join(DM.PASTA, "*.xlsx"))
     return tuple(sorted((a, os.path.getmtime(a), os.path.getsize(a)) for a in arqs if os.path.exists(a)))
 
 
-DEMO = carregar_demografico(_assinatura_demo())
+try:
+    DEMO, _ERRO_DEMO = carregar_demografico(_assinatura_demo()), None
+except Exception as _ex:                    # banco fora do ar só para o demográfico: a aba avisa, o resto do painel segue
+    if MODO_DEMO:
+        raise
+    DEMO, _ERRO_DEMO = pd.DataFrame(columns=DM.COLUNAS), _ex.__class__.__name__
+if MODO_DEMO and st.session_state.get("_dm_envios") is not None:     # envios da demonstração (só na sessão)
+    DEMO = (pd.concat([DEMO, st.session_state["_dm_envios"]], ignore_index=True)
+            .drop_duplicates(["emissora", "fim", "faixa", "tipo", "segmento", "metrica"], keep="last").reset_index(drop=True))
 
 
 def _fmt_var(v, metrica):
@@ -2359,9 +2468,14 @@ def fig_calor_demo(tab, metrica, h, variacao=False):
 
 
 def pagina3():
+    if _ERRO_DEMO:
+        st.error("**Não disponível.** Os dados demográficos não puderam ser carregados do banco de dados. "
+                 "Tente novamente em alguns minutos; se continuar, avise a TI.")
+        st.caption(f"Detalhe técnico: falha ao ler o banco ({_ERRO_DEMO})")
+        return
     if DEMO.empty:
-        st.info("**Sem dados demográficos.** Coloque as exportações do EasyMedia de zonas (OPM#/AFIN%/ALCM# por zona) e de perfil "
-                "(PS% por classe, idade e sexo) na pasta `dados/demografico/` do repositório, ou envie pela seção ⚙ Atualizar dados.")
+        st.info("**Sem dados demográficos.** As exportações do EasyMedia de zonas (OPM#/AFIN%/ALCM# por zona) e de perfil "
+                "(PS% por classe, idade e sexo) ainda não foram carregadas no banco (tabela radio_demografico).")
         return
     fins = sorted(pd.Timestamp(f) for f in DEMO["fim"].unique())
     faixas = sorted(DEMO["faixa"].unique(), reverse=True)        # 05-05 primeiro
@@ -2383,7 +2497,7 @@ def pagina3():
     _idx_foco = next((i for i, e in enumerate(ems) if e in EMISSORAS), 0)      # começa numa emissora própria, mas qualquer uma pode ser o foco
     em_foco = f[4].selectbox("Emissora em foco", ems, index=_idx_foco, format_func=NOME.get, key=f"p3_foco_{len(ems)}",
                              help="Usada no perfil detalhado e na decomposição da variação por zona.")
-    st.session_state["_filtros_txt"] = (f"Demográfico · banco {rot_movel(fim)}" + (f" vs {rot_movel(ref)}" if ref else "") +
+    st.session_state["_filtros_demo"] = (f"Demográfico · banco {rot_movel(fim)}" + (f" vs {rot_movel(ref)}" if ref else "") +
                                         f" · faixa {faixa} · {', '.join(NOME.get(e, e) for e in ems)}")
     dz = DEMO[DEMO["emissora"].isin(ems)]
     tem_zona = (dz["tipo"] == "Zona").any()
@@ -2549,16 +2663,16 @@ st.session_state["_aba_atual"] = ""
 
 
 # =================================================================================== PÁGINA 4 · atualizar dados
+@protegido("parametros.salvar", "painel_parametros",
+           detalhe=lambda par, msg="", *a, **k: dict(recurso_id="radio", recurso_rotulo=msg))
 def _grava_parametros(par, msg="Atualiza parâmetros pelo painel"):
-    json.dump(par, open("parametros.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-    ok = github_salvar("parametros.json", json.dumps(par, ensure_ascii=False, indent=1).encode("utf-8"), msg)
-    if ok is False:
-        st.session_state["msg_erro"] = "Não consegui gravar no GitHub (confira o token em Secrets). A alteração vale só até o app reiniciar."
-    pp = par.get("pasta_persistente")
-    if pp:
-        os.makedirs(pp, exist_ok=True)
-        json.dump({"oficial": par.get("oficial"), "previsao_bi": par.get("previsao_bi")},
-                  open(os.path.join(pp, "parametros_editados.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    if banco.ativo() and not MODO_DEMO:
+        try:
+            banco.salvar_parametros("radio", {k: v for k, v in par.items() if k != "senha"})
+        except Exception as ex:
+            st.session_state["msg_erro"] = f"Não consegui gravar no banco de dados ({ex.__class__.__name__})."
+        return
+    json.dump(par, open("parametros.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)     # demonstração
 
 
 def _recarrega(msg):
@@ -2569,15 +2683,26 @@ def _recarrega(msg):
     st.rerun()
 
 
+@protegido("audiencia.upload", "radio_audiencia",
+           detalhe=lambda nova, descricao, excluidos=None, *a, **k: dict(
+               acao="bancos.excluir_ou_restaurar" if excluidos is not None and banco.ativo() and not MODO_DEMO else "audiencia.upload",
+               recurso_rotulo=descricao))
 def salvar_base(nova, descricao, excluidos=None):
     """Grava a base (todas as colunas: OPM#, share, alcance, tempo médio, amostra e origem) e guarda a versão anterior,
-    também no GitHub quando configurado. `excluidos` (se dado) substitui a lista de bancos excluídos."""
+    `excluidos` (se dado) substitui a lista de bancos excluídos. No banco de dados, a audiência é da aplicação de carga
+    da TI: o painel grava só a lista de excluídos e a descrição (parâmetros)."""
+    if banco.ativo() and not MODO_DEMO:
+        par = dict(PAR)
+        par["dados"] = {"descricao": descricao, "atualizado_em": datetime.now().strftime("%d/%m/%Y %H:%M")}
+        if excluidos is not None:
+            par["excluidos"] = sorted(set(excluidos))
+        _grava_parametros(par, descricao)
+        return
     os.makedirs("backups", exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     if os.path.exists("radio_movel.csv"):
         bk = os.path.join("backups", f"radio_movel_{ts}.csv")
         shutil.copy("radio_movel.csv", bk)
-        github_salvar(f"backups/radio_movel_{ts}.csv", open(bk, "rb").read(), f"Backup da base antes de: {descricao}")
     cols = [c for c in M.COLUNAS if c in nova.columns]
     # o que vem das planilhas fixas de dados/ não é regravado: é lido delas a cada carga, então uma planilha
     # corrigida direto no GitHub passa a valer sem ser encoberta por uma cópia antiga
@@ -2590,12 +2715,7 @@ def salvar_base(nova, descricao, excluidos=None):
     par["dados"] = {"descricao": descricao, "atualizado_em": datetime.now().strftime("%d/%m/%Y %H:%M")}
     if excluidos is not None:
         par["excluidos"] = sorted(set(excluidos))
-    ok = github_salvar("radio_movel.csv", nova.to_csv(index=False).encode("utf-8"), f"Atualiza base de audiência: {descricao}")
-    if ok is False:
-        st.session_state["msg_erro"] = "Não consegui gravar no GitHub (confira o token em Secrets). A base vale só até o app reiniciar."
     _grava_parametros(par, f"Atualiza parâmetros: {descricao}")
-    if par.get("pasta_persistente"):
-        nova.to_csv(os.path.join(par["pasta_persistente"], "radio_base.csv"), index=False)
 
 
 def _eh_demografico_upload(u):
@@ -2612,8 +2732,32 @@ def _eh_demografico_upload(u):
         return False
 
 
-def _aplica_demograficos(ups, tem_senha):
-    """Mostra o que foi lido das planilhas demográficas e grava em dados/demografico/ (e no GitHub, se configurado)."""
+@protegido("demografico.upload", "radio_demografico",
+           detalhe=lambda ups, *a, **k: dict(recurso_rotulo=", ".join(u.name for u in ups)[:300]))
+def _grava_demograficos(ups):
+    """Grava as planilhas demográficas na tabela radio_demografico do banco (banco.gravar substitui as linhas com a mesma
+    emissora/banco/faixa/tipo/segmento/métrica). Nenhum arquivo é gravado, em nenhuma situação."""
+    partes = []
+    for u in ups:
+        u.seek(0)
+        d = DM.ler_arquivo(u, u.name)
+        if len(d):
+            partes.append(d)
+    if not partes:
+        raise ValueError("nenhum valor demográfico reconhecido nas planilhas")
+    novo = pd.concat(partes, ignore_index=True)
+    if MODO_DEMO:
+        # demonstração (sem banco): o envio vale só nesta sessão, em memória
+        ant = st.session_state.get("_dm_envios")
+        st.session_state["_dm_envios"] = novo if ant is None else pd.concat([ant, novo], ignore_index=True)
+        return f"{len(novo)} valores demográficos carregados só nesta sessão (demonstração)"
+    n = banco.gravar("radio_demografico", novo)
+    return f"{n} valores demográficos gravados no banco de dados"
+
+
+def _aplica_demograficos(ups, tem_senha=False):
+    """Mostra o que foi lido das planilhas demográficas e grava (no banco, em produção)."""
+    validas = []
     for u in ups:
         try:
             d = DM.ler_arquivo(u, u.name)
@@ -2623,28 +2767,31 @@ def _aplica_demograficos(ups, tem_senha):
         st.markdown(f'<div class="vs">🗺️ <b>{u.name}</b> (demográfico): {len(d)} valores · '
                     + (f'{", ".join(sorted(d["tipo"].unique()))} · {d["emissora"].nunique()} emissoras · {rot_movel(d["fim"].min())} → {rot_movel(d["fim"].max())}' if len(d) else "nada reconhecido") + "</div>",
                     unsafe_allow_html=True)
-    if tem_senha:
-        st.text_input("Senha", type="password", key="pw_demo")
-    if st.button("Guardar planilhas demográficas", type="primary", key="bt_demo"):
-        if not _senha_ok("pw_demo"):
-            st.error("Senha incorreta.")
+        if len(d):
+            validas.append(u)
+    if validas and st.button("Guardar planilhas demográficas", type="primary", key="bt_demo"):
+        if not _permissao_ok("pw_demo"):
+            st.error("Seu perfil permite apenas consulta.")
             return
-        os.makedirs(DM.PASTA, exist_ok=True)
-        for u in ups:
-            u.seek(0)
-            conteudo = u.read()
-            open(os.path.join(DM.PASTA, u.name), "wb").write(conteudo)
-            ok = github_salvar(f"{DM.PASTA}/{u.name}".replace(os.sep, "/"), conteudo, f"Planilha demográfica: {u.name}")
-            if ok is False:
-                st.session_state["msg_erro"] = "Não consegui gravar no GitHub (confira o token em Secrets). As planilhas valem só até o app reiniciar."
-        _recarrega(f"{len(ups)} planilha(s) demográfica(s) guardada(s) em {DM.PASTA}.")
+        try:
+            msg = _grava_demograficos(validas)
+        except Exception as ex:
+            st.error(f"Não foi possível gravar as planilhas demográficas ({ex.__class__.__name__}: {ex}).")
+            return
+        if msg:
+            carregar_demografico.clear()                        # só o demográfico: as projeções não mudam
+            st.session_state.pop("p3_fim", None)                 # a aba Demográfico abre no banco mais recente
+            st.session_state["msg_ok"] = msg + ". Veja a aba Demográfico."
+            st.session_state["up_nonce"] = st.session_state.get("up_nonce", 0) + 1
+            st.rerun()
 
 
-def _senha_ok(chave):
-    senha = PAR.get("senha") or segredo("senha_atualizacao", "") or ""
-    if not senha:
+def _permissao_ok(chave=None):
+    """Permissão para gravar (login corporativo, permissão "atualizar"). A negativa vai para a auditoria."""
+    if pode_gravar():
         return True
-    return st.session_state.get(chave, "") == senha
+    registra("painel.gravar", resultado="negado", recurso_tipo="painel", erro_codigo="sem_permissao_atualizar")
+    return False
 
 
 def _arquivo_origem(o):
@@ -2688,11 +2835,9 @@ def gerenciar_bancos(tem_senha):
                                    key=f"bk_sel_{st.session_state.get('up_nonce', 0)}")
             alvo = c[1].selectbox("Emissoras", ["Todas as emissoras do banco"] + TODAS, format_func=lambda x: NOME.get(x, x),
                                   key="bk_alvo")
-            if tem_senha:
-                st.text_input("Senha", type="password", key="pw_bkx")
             if st.button("Excluir selecionados", disabled=not sel, key="bt_bkx"):
-                if not _senha_ok("pw_bkx"):
-                    st.error("Senha incorreta.")
+                if not _permissao_ok("pw_bkx"):
+                    st.error("Seu perfil permite apenas consulta.")
                 else:
                     todas = alvo.startswith("Todas")
                     novos = {chave_banco(f) if todas else chave_banco(f, alvo) for f in sel}
@@ -2719,11 +2864,9 @@ def gerenciar_bancos(tem_senha):
             else:
                 st.markdown('<div class="vs">Remover tira da base os valores deste envio. Se a planilha fixa de <b>dados/</b> tiver o mesmo '
                             'banco, o valor dela volta a valer.</div>', unsafe_allow_html=True)
-            if tem_senha:
-                st.text_input("Senha", type="password", key="pw_arq")
             if st.button("Remover este arquivo", key="bt_arq"):
-                if not _senha_ok("pw_arq"):
-                    st.error("Senha incorreta.")
+                if not _permissao_ok("pw_arq"):
+                    st.error("Seu perfil permite apenas consulta.")
                 else:
                     meus = d["arquivo"] == a
                     if a in fixos:
@@ -2743,17 +2886,15 @@ def gerenciar_bancos(tem_senha):
                 volta = st.multiselect("Restaurar", excl, format_func=rot, key="ex_sel",
                                        placeholder="Escolha o que deve voltar para a base")
                 c = st.columns(2)
-                if tem_senha:
-                    st.text_input("Senha", type="password", key="pw_ex")
                 if c[0].button("Restaurar selecionados", disabled=not volta, key="bt_ex"):
-                    if not _senha_ok("pw_ex"):
-                        st.error("Senha incorreta.")
+                    if not _permissao_ok("pw_ex"):
+                        st.error("Seu perfil permite apenas consulta.")
                     else:
                         salvar_base(BASE, f"restaurados {len(volta)} bancos excluídos", set(excl) - set(volta))
                         _recarrega(f"{len(volta)} item(ns) restaurado(s).")
                 if c[1].button("Restaurar todos", key="bt_ex_all"):
-                    if not _senha_ok("pw_ex"):
-                        st.error("Senha incorreta.")
+                    if not _permissao_ok("pw_ex"):
+                        st.error("Seu perfil permite apenas consulta.")
                     else:
                         salvar_base(BASE, "restaurados todos os bancos excluídos", set())
                         _recarrega("Todos os bancos excluídos foram restaurados.")
@@ -2827,137 +2968,154 @@ def pagina_atualizar():
         sc = MOVEL[MOVEL["emissora"].isin(CONCORRENTES)]
         lista.append(("Concorrência", f"{len(CONCORRENTES)} emissoras", f"{rot_movel(sc['fim'].min())} → {rot_movel(sc['fim'].max())}", CINZA))
     lista.append(("Última atualização", meta.get("atualizado_em", "–"), meta.get("descricao", ""), CINZA))
-    gh = (segredo("github") or {}).get("repo")
-    lista.append(("Onde fica salvo", "Demonstração" if MODO_DEMO else ("GitHub" if gh else ("Drive" if PAR.get("pasta_persistente") else "Só nesta sessão")),
-                  gh or PAR.get("pasta_persistente") or "perde-se quando o app reinicia", CINZA))
+    lista.append(("Onde fica salvo", "Demonstração" if MODO_DEMO else "Banco de dados",
+                  "perde-se quando o app reinicia" if MODO_DEMO else "banco da empresa", CINZA))
     kpis(lista)
     if MODO_DEMO:
-        st.info("**Modo demonstração.** Os envios funcionam para teste, mas valem só nesta sessão do app e nunca vão para o "
-                "GitHub. Ao reiniciar, o painel volta aos dados fictícios originais.")
-    elif not gh and not PAR.get("pasta_persistente"):
-        st.warning("**Os envios feitos aqui não ficam salvos.** Sem o bloco `[github]` em Settings → Secrets, a base atualizada "
-                   "vale só até o app reiniciar (o Streamlit Cloud reinicia ao ficar parado e a cada mudança no código). "
-                   "Configure o token do GitHub (veja o secrets_exemplo.toml) ou suba as planilhas na pasta `dados/` do repositório.")
-    tem_senha = bool(PAR.get("senha") or segredo("senha_atualizacao"))
+        st.info("**Modo demonstração.** Os envios funcionam para teste, mas valem só nesta sessão do app e não vão para "
+                "nenhum banco. Ao reiniciar, o painel volta aos dados fictícios originais.")
+    tem_senha = False                       # login corporativo: sem senha (a permissão vem do gateway)
+    if MODO_DEMO:
+        st.segmented_control("Simular perfil (só na demonstração)", list(PERFIS_DEMO), default="Pode atualizar",
+                             key="perfil_demo", help="No Labs, quem é o usuário e o que ele pode fazer vem do login corporativo.")
+    _u = usuario_atual()
+    if not pode_gravar():
+        quem = f"{_u.nome} ({_u.email})" if _u else "Usuário não identificado"
+        st.warning(f"**{quem}** · Seu perfil permite apenas consulta: os dados aparecem normalmente, mas não é possível "
+                   f"enviar planilhas nem alterar parâmetros. Para receber o acesso, fale com a TI.")
+        return
+    if _u:
+        st.caption(f"Conectado como **{_u.nome}** ({_u.email}) · " + ("na demonstração, nada é gravado de verdade." if MODO_DEMO
+                   else "as alterações feitas aqui ficam registradas na auditoria."))
 
-    l = st.columns([1.35, 1])
-    with l[0]:
-        with cartao("1 · Enviar dados novos do EasyMedia",
-                    "Histórico (.xlsx com uma aba por ano), ranking de concorrência (.xlsx) ou CSV do EasyMedia. Pode ser só o período novo: o painel junta com a base.", nota=True):
-            ups = st.file_uploader("Arquivos", type=["xlsx", "csv"], accept_multiple_files=True,
-                                   key=f"up_{st.session_state.get('up_nonce', 0)}", label_visibility="collapsed")
-            if not ups:
-                st.markdown('<div class="vs">Formatos aceitos: <b>histórico</b> (coluna A = emissora, B = período <i>SAL - JUN/2026 A AGO/2026</i>, '
-                            'C = OPM#) e <b>ranking de concorrência</b> (uma linha de períodos, abaixo OPM# / SHT% / ALCM# / TMED# e uma linha por '
-                            'emissora). Valores com # são marcados como amostra pequena.</div>', unsafe_allow_html=True)
-            else:
-                lidos, demos = [], []
-                for u in ups:
-                    if u.name.lower().endswith(".xlsx") and _eh_demografico_upload(u):
-                        demos.append(u)
-                        continue
-                    try:
-                        d = M.ler_arquivo(u, u.name)
-                    except Exception as ex:
-                        st.error(f"Não consegui ler {u.name}: {ex}")
-                        continue
-                    lidos.append(d)
-                    st.markdown(f'<div class="vs">📄 <b>{u.name}</b>: {len(d)} linhas reconhecidas'
-                                + (f' · {", ".join(NOME.get(x, x) for x in d["emissora"].unique())} · '
-                                   f'{rot_movel(d["fim"].min())} → {rot_movel(d["fim"].max())}' if len(d) else "") + "</div>",
-                                unsafe_allow_html=True)
-                if demos:
-                    _aplica_demograficos(demos, tem_senha)
-                novo = pd.concat(lidos, ignore_index=True).drop_duplicates(["emissora", "fim"], keep="last") if lidos else pd.DataFrame()
-                if novo.empty and demos:
-                    pass
-                elif novo.empty:
-                    st.error("Nenhuma linha no formato do EasyMedia foi encontrada nos arquivos enviados.")
+    if banco.ativo() and not MODO_DEMO:
+        st.info("**Dados vindos do banco de dados da empresa.** A audiência é carregada pela aplicação de carga da TI. "
+                "Aqui ficam o envio das planilhas demográficas e os ajustes do painel: bancos excluídos, números oficiais "
+                "e previsão do BI. Tudo é gravado no banco.")
+        st.download_button("⬇️ Baixar a base atual (CSV)", MOVEL.to_csv(sep=";", decimal=",", index=False).encode("utf-8-sig"),
+                           "audiencia_radio_base.csv", "text/csv", key="dl_base_banco")
+        with cartao("Enviar zonas e perfil (demográfico)",
+                    "exportações do EasyMedia por zona (OPM#, AFIN%, ALCM#) ou por perfil (PS% de classe, idade e sexo), "
+                    "com um ou vários bancos · gravadas na tabela radio_demografico do banco"):
+            ups_dm = st.file_uploader("Planilhas de zonas ou perfil (.xlsx)", type=["xlsx"], accept_multiple_files=True,
+                                      key=f"up_dm_banco_{st.session_state.get('up_nonce', 0)}")
+            if ups_dm:
+                _aplica_demograficos(ups_dm)
+    else:
+        l = st.columns([1.35, 1])
+        with l[0]:
+            with cartao("1 · Enviar dados novos do EasyMedia",
+                        "Histórico (.xlsx com uma aba por ano), ranking de concorrência (.xlsx) ou CSV do EasyMedia. Pode ser só o período novo: o painel junta com a base.", nota=True):
+                ups = st.file_uploader("Arquivos", type=["xlsx", "csv"], accept_multiple_files=True,
+                                       key=f"up_{st.session_state.get('up_nonce', 0)}", label_visibility="collapsed")
+                if not ups:
+                    st.markdown('<div class="vs">Formatos aceitos: <b>histórico</b> (coluna A = emissora, B = período <i>SAL - JUN/2026 A AGO/2026</i>, '
+                                'C = OPM#) e <b>ranking de concorrência</b> (uma linha de períodos, abaixo OPM# / SHT% / ALCM# / TMED# e uma linha por '
+                                'emissora). Valores com # são marcados como amostra pequena.</div>', unsafe_allow_html=True)
                 else:
-                    modo = st.radio("Como aplicar", ["Juntar com a base atual (recomendado)", "Substituir a base inteira"],
-                                    horizontal=True, key="up_modo")
-                    juntar = modo.startswith("Juntar")
-                    n, a = M.mesclar(MOVEL, novo)[1:]          # o que muda no que o painel mostra
-                    m = M.mesclar(BASE, novo)[0] if juntar else novo.copy()   # o que se grava (inclui os excluídos)
-                    sai = len(MOVEL) - len(m.merge(MOVEL[["emissora", "fim"]], on=["emissora", "fim"])) if not juntar else 0
-                    kk = [("Períodos novos", br(len(n)), ", ".join(sorted({rot_movel(x) for x in n["fim"]}))[:60] or "nenhum", VERDE if len(n) else CINZA),
-                          ("Valores alterados", br(len(a)), "o arquivo novo prevalece", AMARELO if len(a) else CINZA)]
-                    if not juntar:
-                        kk.append(("Removidos", br(sai), "períodos que não estão no arquivo", VERMELHO if sai else CINZA))
-                    kpis(kk)
-                    # checagens
-                    avisos = []
-                    for e in [x for x in m["emissora"].unique() if x in EMISSORAS]:
-                        s = m[m["emissora"] == e].set_index("fim")["opm"].sort_index()
-                        meses = pd.date_range(s.index.min(), s.index.max(), freq="MS")
-                        falta = [rot_movel(x) for x in meses if x not in s.index and x != pd.Timestamp("2016-09-01")]
-                        if falta:
-                            avisos.append(f"{NOME.get(e, e)}: faltam {', '.join(falta[:6])}{'…' if len(falta) > 6 else ''}")
-                        ss = s[s.index.isin(n["fim"][n["emissora"] == e])] if len(n) else s.iloc[:0]
-                        for t, v in ss.items():
-                            ant = s.get(t - pd.DateOffset(months=1))
-                            if ant and abs(v / ant - 1) > .15:
-                                avisos.append(f"{NOME.get(e, e)} {rot_movel(t)}: salto de {pct(v / ant - 1, 1, True)} sobre o banco anterior ({rot_movel(t - pd.DateOffset(months=1))}) — confira")
-                    if len(n) and n["emissora"].isin(EMISSORAS).any() and n.loc[n["emissora"].isin(EMISSORAS), "emissora"].nunique() < len(EMISSORAS):
-                        avisos.append("O arquivo só traz períodos novos de uma emissora.")
-                    for av in avisos:
-                        st.markdown(f'<div class="aviso">⚠️ {av}</div>', unsafe_allow_html=True)
-                    criticos, alertas = valida_envio(lidos, [u.name for u in ups])
-                    if not criticos and not alertas:
-                        st.markdown('<div class="vs" style="color:#0a7a0a">✅ Validação: nenhum problema encontrado nos arquivos.</div>',
+                    lidos, demos = [], []
+                    for u in ups:
+                        if u.name.lower().endswith(".xlsx") and _eh_demografico_upload(u):
+                            demos.append(u)
+                            continue
+                        try:
+                            d = M.ler_arquivo(u, u.name)
+                        except Exception as ex:
+                            st.error(f"Não consegui ler {u.name}: {ex}")
+                            continue
+                        lidos.append(d)
+                        st.markdown(f'<div class="vs">📄 <b>{u.name}</b>: {len(d)} linhas reconhecidas'
+                                    + (f' · {", ".join(NOME.get(x, x) for x in d["emissora"].unique())} · '
+                                       f'{rot_movel(d["fim"].min())} → {rot_movel(d["fim"].max())}' if len(d) else "") + "</div>",
                                     unsafe_allow_html=True)
-                    for c_ in criticos:
-                        st.markdown(f'<div class="aviso" style="border-color:#e8a29b; background:#fdecea">⛔ {c_}</div>', unsafe_allow_html=True)
-                    for a_ in alertas:
-                        st.markdown(f'<div class="aviso">⚠️ {a_}</div>', unsafe_allow_html=True)
-                    confirma = (not criticos) or st.checkbox("Revisei os problemas acima e quero aplicar mesmo assim", key="up_conf")
-                    if len(n) or len(a):
-                        tab = pd.concat([n.assign(opm_antes=np.nan, tipo="novo"), a.assign(tipo="alterado")], ignore_index=True)
-                        tab = pd.DataFrame({"Emissora": tab["emissora"].map(lambda x: NOME.get(x, x)), "Período": tab["fim"].map(rot_movel),
-                                            "Antes": tab["opm_antes"].map(lambda v: "" if pd.isna(v) else br(v)),
-                                            "Agora": tab["opm"].map(br), "": tab["tipo"]})
-                        st.dataframe(tab, hide_index=True, width="stretch", height=min(40 + 35 * len(tab), 320))
-                    if tem_senha:
-                        st.text_input("Senha", type="password", key="pw_up")
-                    pode = (len(n) or len(a) or not juntar) and confirma
-                    if st.button("Aplicar atualização", type="primary", disabled=not pode, key="bt_up"):
-                        if not _senha_ok("pw_up"):
-                            st.error("Senha incorreta.")
-                        else:
-                            excl = set(PAR.get("excluidos", []))
-                            if juntar:   # o que foi reenviado volta a valer, mesmo que o banco tivesse sido excluído
-                                excl -= {chave_banco(f, e) for f, e in zip(novo["fim"], novo["emissora"])}
-                                excl -= {chave_banco(f) for f in novo["fim"]}
-                            else:        # substituir: o que não está no arquivo sai (inclusive o que vem das planilhas de dados/)
-                                ficam = {chave_banco(f, e) for f, e in zip(novo["fim"], novo["emissora"])}
-                                excl = (excl - ficam - {chave_banco(f) for f in novo["fim"]}) | \
-                                       ({chave_banco(f, e) for f, e in zip(MOVEL["fim"], MOVEL["emissora"])} - ficam)
-                            salvar_base(m, f"upload: {', '.join(u.name for u in ups)}", excl)
-                            _recarrega(f"Base atualizada: {len(n)} períodos novos e {len(a)} valores alterados. "
-                                       "As projeções e validações foram refeitas com os dados novos.")
-                    if not (len(n) or len(a) or not juntar):
-                        st.markdown('<div class="vs">Nada para atualizar: a base já tem esses valores.</div>', unsafe_allow_html=True)
-                    elif not confirma:
-                        st.markdown('<div class="vs">Para aplicar, marque a confirmação acima depois de revisar os problemas.</div>',
-                                    unsafe_allow_html=True)
-    with l[1]:
-        with cartao("Versões anteriores", "Cada atualização guarda uma cópia da base anterior", nota=True):
-            bks = sorted(glob.glob(os.path.join("backups", "radio_movel_*.csv")), reverse=True)
-            if not bks:
-                st.markdown('<div class="vs">Nenhuma versão anterior ainda.</div>', unsafe_allow_html=True)
-            else:
-                fmt_bk = lambda f: datetime.strptime(os.path.basename(f)[12:27], "%Y%m%d_%H%M%S").strftime("%d/%m/%Y %H:%M:%S")
-                bk = st.selectbox("Versão", bks, format_func=fmt_bk, key="bk_sel")
-                if tem_senha:
-                    st.text_input("Senha", type="password", key="pw_bk")
-                if st.button("Restaurar esta versão", key="bt_bk"):
-                    if not _senha_ok("pw_bk"):
-                        st.error("Senha incorreta.")
+                    if demos:
+                        _aplica_demograficos(demos, tem_senha)
+                    novo = pd.concat(lidos, ignore_index=True).drop_duplicates(["emissora", "fim"], keep="last") if lidos else pd.DataFrame()
+                    if novo.empty and demos:
+                        pass
+                    elif novo.empty:
+                        st.error("Nenhuma linha no formato do EasyMedia foi encontrada nos arquivos enviados.")
                     else:
-                        salvar_base(pd.read_csv(bk, parse_dates=["inicio", "fim"]), f"restaurada a versão de {fmt_bk(bk)}")
-                        _recarrega(f"Versão de {fmt_bk(bk)} restaurada.")
-            st.download_button("⬇️ Baixar a base atual (CSV)", MOVEL.to_csv(sep=";", decimal=",", index=False).encode("utf-8-sig"),
-                               "audiencia_radio_base.csv", "text/csv", key="dl_base")
+                        modo = st.radio("Como aplicar", ["Juntar com a base atual (recomendado)", "Substituir a base inteira"],
+                                        horizontal=True, key="up_modo")
+                        juntar = modo.startswith("Juntar")
+                        n, a = M.mesclar(MOVEL, novo)[1:]          # o que muda no que o painel mostra
+                        m = M.mesclar(BASE, novo)[0] if juntar else novo.copy()   # o que se grava (inclui os excluídos)
+                        sai = len(MOVEL) - len(m.merge(MOVEL[["emissora", "fim"]], on=["emissora", "fim"])) if not juntar else 0
+                        kk = [("Períodos novos", br(len(n)), ", ".join(sorted({rot_movel(x) for x in n["fim"]}))[:60] or "nenhum", VERDE if len(n) else CINZA),
+                              ("Valores alterados", br(len(a)), "o arquivo novo prevalece", AMARELO if len(a) else CINZA)]
+                        if not juntar:
+                            kk.append(("Removidos", br(sai), "períodos que não estão no arquivo", VERMELHO if sai else CINZA))
+                        kpis(kk)
+                        # checagens
+                        avisos = []
+                        for e in [x for x in m["emissora"].unique() if x in EMISSORAS]:
+                            s = m[m["emissora"] == e].set_index("fim")["opm"].sort_index()
+                            meses = pd.date_range(s.index.min(), s.index.max(), freq="MS")
+                            falta = [rot_movel(x) for x in meses if x not in s.index and x != pd.Timestamp("2016-09-01")]
+                            if falta:
+                                avisos.append(f"{NOME.get(e, e)}: faltam {', '.join(falta[:6])}{'…' if len(falta) > 6 else ''}")
+                            ss = s[s.index.isin(n["fim"][n["emissora"] == e])] if len(n) else s.iloc[:0]
+                            for t, v in ss.items():
+                                ant = s.get(t - pd.DateOffset(months=1))
+                                if ant and abs(v / ant - 1) > .15:
+                                    avisos.append(f"{NOME.get(e, e)} {rot_movel(t)}: salto de {pct(v / ant - 1, 1, True)} sobre o banco anterior ({rot_movel(t - pd.DateOffset(months=1))}) — confira")
+                        if len(n) and n["emissora"].isin(EMISSORAS).any() and n.loc[n["emissora"].isin(EMISSORAS), "emissora"].nunique() < len(EMISSORAS):
+                            avisos.append("O arquivo só traz períodos novos de uma emissora.")
+                        for av in avisos:
+                            st.markdown(f'<div class="aviso">⚠️ {av}</div>', unsafe_allow_html=True)
+                        criticos, alertas = valida_envio(lidos, [u.name for u in ups])
+                        if not criticos and not alertas:
+                            st.markdown('<div class="vs" style="color:#0a7a0a">✅ Validação: nenhum problema encontrado nos arquivos.</div>',
+                                        unsafe_allow_html=True)
+                        for c_ in criticos:
+                            st.markdown(f'<div class="aviso" style="border-color:#e8a29b; background:#fdecea">⛔ {c_}</div>', unsafe_allow_html=True)
+                        for a_ in alertas:
+                            st.markdown(f'<div class="aviso">⚠️ {a_}</div>', unsafe_allow_html=True)
+                        confirma = (not criticos) or st.checkbox("Revisei os problemas acima e quero aplicar mesmo assim", key="up_conf")
+                        if len(n) or len(a):
+                            tab = pd.concat([n.assign(opm_antes=np.nan, tipo="novo"), a.assign(tipo="alterado")], ignore_index=True)
+                            tab = pd.DataFrame({"Emissora": tab["emissora"].map(lambda x: NOME.get(x, x)), "Período": tab["fim"].map(rot_movel),
+                                                "Antes": tab["opm_antes"].map(lambda v: "" if pd.isna(v) else br(v)),
+                                                "Agora": tab["opm"].map(br), "": tab["tipo"]})
+                            st.dataframe(tab, hide_index=True, width="stretch", height=min(40 + 35 * len(tab), 320))
+                        pode = (len(n) or len(a) or not juntar) and confirma
+                        if st.button("Aplicar atualização", type="primary", disabled=not pode, key="bt_up"):
+                            if not _permissao_ok("pw_up"):
+                                st.error("Seu perfil permite apenas consulta.")
+                            else:
+                                excl = set(PAR.get("excluidos", []))
+                                if juntar:   # o que foi reenviado volta a valer, mesmo que o banco tivesse sido excluído
+                                    excl -= {chave_banco(f, e) for f, e in zip(novo["fim"], novo["emissora"])}
+                                    excl -= {chave_banco(f) for f in novo["fim"]}
+                                else:        # substituir: o que não está no arquivo sai (inclusive o que vem das planilhas de dados/)
+                                    ficam = {chave_banco(f, e) for f, e in zip(novo["fim"], novo["emissora"])}
+                                    excl = (excl - ficam - {chave_banco(f) for f in novo["fim"]}) | \
+                                           ({chave_banco(f, e) for f, e in zip(MOVEL["fim"], MOVEL["emissora"])} - ficam)
+                                salvar_base(m, f"upload: {', '.join(u.name for u in ups)}", excl)
+                                _recarrega(f"Base atualizada: {len(n)} períodos novos e {len(a)} valores alterados. "
+                                           "As projeções e validações foram refeitas com os dados novos.")
+                        if not (len(n) or len(a) or not juntar):
+                            st.markdown('<div class="vs">Nada para atualizar: a base já tem esses valores.</div>', unsafe_allow_html=True)
+                        elif not confirma:
+                            st.markdown('<div class="vs">Para aplicar, marque a confirmação acima depois de revisar os problemas.</div>',
+                                        unsafe_allow_html=True)
+        with l[1]:
+            with cartao("Versões anteriores", "Cada atualização guarda uma cópia da base anterior", nota=True):
+                bks = sorted(glob.glob(os.path.join("backups", "radio_movel_*.csv")), reverse=True)
+                if not bks:
+                    st.markdown('<div class="vs">Nenhuma versão anterior ainda.</div>', unsafe_allow_html=True)
+                else:
+                    fmt_bk = lambda f: datetime.strptime(os.path.basename(f)[12:27], "%Y%m%d_%H%M%S").strftime("%d/%m/%Y %H:%M:%S")
+                    bk = st.selectbox("Versão", bks, format_func=fmt_bk, key="bk_sel")
+                    if st.button("Restaurar esta versão", key="bt_bk"):
+                        if not _permissao_ok("pw_bk"):
+                            st.error("Seu perfil permite apenas consulta.")
+                        else:
+                            salvar_base(pd.read_csv(bk, parse_dates=["inicio", "fim"]), f"restaurada a versão de {fmt_bk(bk)}")
+                            _recarrega(f"Versão de {fmt_bk(bk)} restaurada.")
+                st.download_button("⬇️ Baixar a base atual (CSV)", MOVEL.to_csv(sep=";", decimal=",", index=False).encode("utf-8-sig"),
+                                   "audiencia_radio_base.csv", "text/csv", key="dl_base")
 
     gerenciar_bancos(tem_senha)
 
@@ -2975,18 +3133,16 @@ def pagina_atualizar():
                                  column_config={k: st.column_config.NumberColumn(min_value=0, step=100, format="%d")
                                                 for k in ["1º semestre", "2º semestre", "Ano"]})
         c[1].markdown('<div class="vs">Previsão do BI usada como referência e patamar padrão de 2026.</div>', unsafe_allow_html=True)
-        if tem_senha:
-            st.text_input("Senha", type="password", key="pw_of")
         if st.button("Salvar números", key="bt_of"):
-            if not _senha_ok("pw_of"):
-                st.error("Senha incorreta.")
+            if not _permissao_ok("pw_of"):
+                st.error("Seu perfil permite apenas consulta.")
             else:
                 ed = ed.dropna()
                 ruim = [p for p in ed["Período"].astype(str) if not re.fullmatch(r"\d{4}|[12]S\d{2}", p.strip())]
                 if ruim:
                     st.error(f"Período inválido: {', '.join(ruim)}. Use 2026, 1S26 ou 2S26.")
                 else:
-                    par = json.load(open("parametros.json", encoding="utf-8"))
+                    par = copy.deepcopy(PAR)
                     par["oficial"] = {e: {str(r["Período"]).strip(): int(r["OPM# oficial"]) for _, r in ed[ed["Emissora"] == e].iterrows()}
                                       for e in EMISSORAS}
                     par["previsao_bi"] = {r["Emissora"]: {"S1": int(r["1º semestre"]), "S2": int(r["2º semestre"]), "ano": int(r["Ano"])}
@@ -3068,7 +3224,7 @@ if st.session_state.pop("_abrir_pdf", False):
     st.session_state.pop("_pdf_bytes", None)
     janela_pdf()
 
-VERSAO_PAINEL = "29/10/2026 · v21"
+VERSAO_PAINEL = "03/11/2026 · Labs (login corporativo, banco de dados)"
 _rodape = st.container(key="notas")
 with _rodape, st.expander("🧩 Visualizações da tela inicial"):
     st.markdown('<div class="vs">Marque o que deve aparecer na Visão geral. As padrão já vêm marcadas; para tirar uma '
@@ -3148,3 +3304,233 @@ _rodape.markdown(f'<div class="rodape-marca"><img src="data:image/png;base64,{LO
                  f'Fonte: Kantar IBOPE EasyMedia4 (Rádio Recall) · versão {VERSAO_PAINEL} · Streamlit {st.__version__}{_aviso_tema}'
                  f'<br><span class="dica-atalho">Atalhos: pressione <kbd>?</kbd></span></div></div>',
                  unsafe_allow_html=True)
+
+
+# =================================================================================== ASSISTENTE (mini chat lateral)
+# Fase 1: respostas prontas, calculadas com os dados do painel (chat.py), sem IA. A aba com a seta fica na borda
+# esquerda da tela; o quadro desliza ao abrir e fechar. Tudo roda num fragmento: conversar não recarrega o painel.
+_CHAT_CSS = """
+<style>
+.st-key-chat_aba {position:fixed !important; left:0; top:44vh; z-index:1000300; width:auto !important;
+    transition:left .45s cubic-bezier(.2,.8,.2,1);}
+.st-key-chat_aba [data-testid="stElementContainer"]:has(.chat-aberto) {display:none;}
+.st-key-chat_aba button {width:34px; min-width:34px; height:48px; min-height:0; padding:0; border-radius:0 12px 12px 0;
+    border:1px solid rgba(255,255,255,.18); border-left:none; color:#fff !important;
+    background:linear-gradient(160deg, #2a78d6, #7b5cff); box-shadow:0 4px 16px rgba(42,120,214,.45);
+    animation:chamar 4s ease-in-out infinite;}
+.st-key-chat_aba button p {font-size:22px; font-weight:700; line-height:1; margin:0;}
+.st-key-chat_aba button:hover {filter:brightness(1.12); width:40px;}
+@keyframes chamar {{ 0%,100% {{box-shadow:0 4px 16px rgba(42,120,214,.45);}} 50% {{box-shadow:0 4px 26px rgba(123,92,255,.75);}} }}
+.stApp:has(.chat-aberto) .st-key-chat_aba {left:min(384px, 94vw);}
+.stApp:has(.chat-aberto) .st-key-chat_aba button {animation:none;}
+
+.st-key-chat_painel {position:fixed !important; left:12px; top:92px; bottom:16px; z-index:1000250;
+    width:min(372px, calc(94vw - 12px)) !important; padding:14px 14px 10px; border-radius:16px; gap:8px !important;
+    background:__FUNDO__; border:1px solid __BORDA__; box-shadow:0 18px 50px rgba(0,0,0,.45);
+    transform:translateX(calc(-100% - 40px)); visibility:hidden;
+    transition:transform .45s cubic-bezier(.2,.8,.2,1), visibility 0s linear .45s;}
+.stApp:has(.chat-aberto) .st-key-chat_painel {transform:none; visibility:visible;
+    transition:transform .45s cubic-bezier(.2,.8,.2,1), visibility 0s;}
+.st-key-chat_painel .chat-cab {display:flex; align-items:center; gap:10px; padding-bottom:8px; border-bottom:1px solid __BORDA__;}
+.st-key-chat_painel .chat-ico {width:30px; height:30px; border-radius:9px; display:grid; place-items:center; font-size:16px;
+    background:linear-gradient(160deg, #2a78d6, #7b5cff); color:#fff;}
+.st-key-chat_painel .chat-tit {font-weight:700; font-size:.92rem; color:__TEXTO__;}
+.st-key-chat_painel .chat-sub {font-size:.7rem; color:__SUAVE__;}
+.st-key-chat_painel [data-testid="stElementContainer"]:has(.chat-msgs) {flex:1 1 0; min-height:0; overflow:hidden;}
+.st-key-chat_painel [data-testid="stElementContainer"]:has(.chat-msgs) div:has(.chat-msgs) {height:100%; min-height:0;}
+.st-key-chat_painel .chat-msgs {height:100%; overflow-y:auto; overscroll-behavior:contain; padding:4px 6px 4px 2px;
+    display:flex; flex-direction:column-reverse; gap:8px; scrollbar-width:thin; scrollbar-color:__BORDA__ transparent;}
+.st-key-chat_painel .chat-msgs::-webkit-scrollbar {width:6px;}
+.st-key-chat_painel .chat-msgs::-webkit-scrollbar-thumb {background:__BORDA__; border-radius:3px;}
+.st-key-chat_sug {width:100% !important; max-width:100%; min-width:0;}
+.st-key-chat_sug [data-testid="stButtonGroup"] {width:100%; min-width:0;}
+.st-key-chat_sug div:has(> button) {flex-wrap:nowrap !important; overflow-x:auto; padding-bottom:4px; scrollbar-width:thin;}
+.st-key-chat_sug button {flex:0 0 auto; white-space:nowrap;}
+.st-key-chat_painel .msg {max-width:88%; padding:8px 11px; border-radius:12px; font-size:.8rem; line-height:1.45;
+    animation:pop .25s ease-out both;}
+.st-key-chat_painel .msg.bot {align-self:flex-start; background:__BOLHA__; color:__TEXTO__; border-top-left-radius:4px;}
+.st-key-chat_painel .msg.eu {align-self:flex-end; background:#2a78d6; color:#fff; border-top-right-radius:4px;}
+.st-key-chat_painel .msg .it {display:block; padding-left:12px; position:relative; margin-top:3px;}
+.st-key-chat_painel .msg .it::before {content:"•"; position:absolute; left:2px; opacity:.7;}
+.st-key-chat_painel [data-testid="stPills"] button {font-size:.7rem; padding:2px 9px; min-height:0;}
+.st-key-chat_painel [data-testid="stChatInput"] textarea {font-size:.82rem;}
+.st-key-chat_painel .msg .tt {display:block; margin:4px 0 2px;}
+.st-key-chat_painel .msg details.como {margin-top:7px; font-size:.7rem; opacity:.8;}
+.st-key-chat_painel .msg details.como summary {cursor:pointer; color:__SUAVE__;}
+.st-key-chat_painel .msg details.como ul {margin:4px 0 0; padding-left:16px;}
+.st-key-chat_painel .msg.digitando {display:flex; gap:4px; padding:11px 13px;}
+.st-key-chat_painel .msg.digitando i {width:6px; height:6px; border-radius:50%; background:__SUAVE__; animation:pulinho 1s infinite;}
+.st-key-chat_painel .msg.digitando i:nth-child(2) {animation-delay:.15s;}
+.st-key-chat_painel .msg.digitando i:nth-child(3) {animation-delay:.3s;}
+@keyframes pulinho {{ 0%,60%,100% {{transform:none; opacity:.5;}} 30% {{transform:translateY(-4px); opacity:1;}} }}
+.st-key-chat_painel .msg .sub {display:block; padding-left:12px; margin-top:2px; opacity:.85; font-size:.76rem;}
+.st-key-chat_painel [data-testid="stChatInput"] > div {background:__CAMPO__ !important; border-color:__BORDA__ !important;}
+.st-key-chat_painel [data-testid="stChatInput"] textarea {color:__TEXTO__ !important; -webkit-text-fill-color:__TEXTO__;}
+.st-key-chat_painel [data-testid="stChatInput"] textarea::placeholder {color:__SUAVE__ !important; -webkit-text-fill-color:__SUAVE__;}
+@media (prefers-reduced-motion: reduce) {{ .st-key-chat_painel, .st-key-chat_aba {{transition:none !important;}} }}
+</style>
+""".replace("{{", "{").replace("}}", "}")
+for _k, _v in {"__FUNDO__": "#111a2e" if ESCURO else "#ffffff", "__BORDA__": "#24324f" if ESCURO else "#dfe4ee",
+               "__TEXTO__": "#e8edf7" if ESCURO else "#1d2433", "__SUAVE__": "#8f9bb5" if ESCURO else "#6b7385",
+               "__BOLHA__": "#1b2742" if ESCURO else "#eef2f9",
+               "__CAMPO__": "#0d1526" if ESCURO else "#ffffff"}.items():
+    _CHAT_CSS = _CHAT_CSS.replace(_k, _v)
+st.markdown(_CHAT_CSS, unsafe_allow_html=True)
+
+
+def _config_ia():
+    """Chave e modelo do Gemini: Secrets do Streamlit (demonstração) ou variáveis de ambiente (Labs). Sem chave: respostas prontas."""
+    def ler(nome):
+        try:
+            v = st.secrets.get(nome)
+        except Exception:                 # sem arquivo de secrets
+            v = None
+        return v or os.environ.get(nome)
+    return (ler("GEMINI_API_KEY"), ler("GEMINI_MODELO") or chat.MODELO_PADRAO,
+            ler("GEMINI_MODELO_RESERVA") or chat.MODELO_RESERVA)
+
+
+CHAT_CHAVE, CHAT_MODELO, CHAT_RESERVA = _config_ia()
+CHAT_LIMITE = 30                          # perguntas à IA por sessão (controle de custo)
+
+
+def _chat_msgs():
+    msgs = st.session_state.setdefault("chat_msgs", [{"q": "bot", "t": chat.BOAS_VINDAS}])
+    for k, m in enumerate(msgs):          # sessões antigas guardavam tuplas
+        if isinstance(m, tuple):
+            msgs[k] = {"q": m[0], "t": m[1]}
+    return msgs
+
+
+def _chat_alterna():
+    st.session_state["chat_aberto"] = not st.session_state.get("chat_aberto", False)
+
+
+def _chat_pergunta(txt):
+    """Só registra a pergunta; a resposta é calculada no fragmento (assim aparece o "digitando…")."""
+    txt = (txt or "").strip()[:500]
+    if txt and not st.session_state.get("chat_pendente"):
+        _chat_msgs().append({"q": "eu", "t": txt})
+        st.session_state["chat_pendente"] = txt
+
+
+def _chat_digitou():
+    _chat_pergunta(st.session_state.get("chat_txt"))
+
+
+def _chat_sugestao():
+    v = st.session_state.get("chat_sug")
+    st.session_state["chat_sug"] = None
+    _chat_pergunta(v)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _chat_proj_base(e, assinatura):
+    """Mesma projeção da aba Projeções e cenários (método padrão, nowcast ligado), até o fim do ano do próximo trimestre."""
+    ate = Q[e].index.max()
+    alvo = pd.Period(f"{(ate + 1).year}Q4", "Q")
+    p = rodar_projecao(e, list(M.METODOS)[0], str(ate), max(1, int((alvo - ate).n)), True, False)
+    fe = fechamentos(p, p["sim"].shape[0])
+    ano = (ate + 1).year
+    prox = [{"trimestre": f"{rot_trim(t)} ({TRIM_NOME[t.quarter]})", "centro": round(float(p["centro"][i])),
+             "faixa80": [round(float(x)) for x in np.percentile(p["sim"][:, i], [10, 90])],
+             "nowcast": bool(i == 0 and p["nowcast"])} for i, t in enumerate(p["futuros"][:2])]
+    real = [float(p["q"][t]) for t in fe[ano]["realizados"]] if ano in fe else []
+    fut = [float(p["centro"][i]) for i, t in enumerate(p["futuros"]) if t.year == ano]
+    val = p["validacao"]
+    return {"metodo": p["metodo"], "dados_ate": rot_trim(ate), "ano": ano, "proximos": prox, "v": fe[ano]["ano"] if ano in fe else None,
+            "realizados": real, "futuros_centro": fut,
+            "mape": float(val[val["h"] <= 2]["MAPE"].mean()) if len(val) else None}
+
+
+def _chat_projetar(e, patamar=None):
+    b = _chat_proj_base(e, str(MOVEL["fim"].max()))
+    if b["v"] is None:
+        return {"emissora": e, "erro": "sem trimestres suficientes para fechar o ano"}
+    ano, v = b["ano"], b["v"]
+    bi = PREV_BI.get(e, {}).get("ano") if ano == 2026 else None
+    ofic_ant = OFICIAL.get(e, {}).get(str(ano - 1))
+    pat = float(patamar) if patamar else (bi or ofic_ant)
+    out = {"emissora": e, "metodo": b["metodo"], "trimestres_fechados_ate": b["dados_ate"], "proximos_trimestres": b["proximos"],
+           "ano": ano, "fechamento_mediana": round(float(np.median(v))), "faixa80": [round(float(x)) for x in np.percentile(v, [10, 90])],
+           "oficial_ano_anterior": ofic_ant, "previsao_bi_ano": bi,
+           "erro_tipico_validacao_pct": round(b["mape"], 1) if b["mape"] is not None else None}
+    if pat:
+        n_rest = 4 - len(b["realizados"])
+        out.update({"patamar": round(pat), "origem_patamar": "informado" if patamar else ("previsão BI" if bi else f"oficial {ano - 1}"),
+                    "chance_acima_do_patamar": round(float(np.mean(v >= pat)), 4)})
+        if n_rest > 0:
+            out["media_necessaria_trimestres_restantes"] = round((pat / K_ANO[0] * 4 - sum(b["realizados"])) / n_rest)
+            out["projecao_media_trimestres_restantes"] = round(float(np.mean(b["futuros_centro"]))) if b["futuros_centro"] else None
+    return out
+
+
+def _chat_fonte():
+    return chat.Fonte(MOVEL, PAR, DEMO, projetar=_chat_projetar, demo=MODO_DEMO)
+
+
+def _chat_responde(txt):
+    msgs = _chat_msgs()
+    usadas = st.session_state.get("chat_usadas", 0)
+    if CHAT_CHAVE and usadas < CHAT_LIMITE:
+        historico = [(m["q"], m["t"]) for m in msgs[1:-1] if m.get("modo") != "erro"]
+        try:
+            resp, consultas, usado = chat.perguntar_ia(txt, _chat_fonte(), CHAT_CHAVE, CHAT_MODELO, historico,
+                                                        reserva=CHAT_RESERVA)
+            st.session_state["chat_usadas"] = usadas + 1
+            registra("assistente.pergunta", recurso_tipo="assistente", detalhe=f"{len(consultas)} consultas · {usado}")
+            return {"q": "bot", "t": resp, "consultas": consultas, "modo": "ia", "modelo": usado}
+        except Exception as ex:           # API fora, chave errada, limite do plano…: cai nas respostas prontas
+            aviso = f"*(A IA não respondeu agora: {ex.__class__.__name__}. Resposta automática:)*\n"
+            return {"q": "bot", "t": aviso + chat.responder(txt, _chat_fonte()), "modo": "erro"}
+    extra = (f"*(Limite de {CHAT_LIMITE} perguntas à IA nesta sessão. Resposta automática:)*\n" if CHAT_CHAVE else "")
+    try:
+        return {"q": "bot", "t": extra + chat.responder(txt, _chat_fonte()), "modo": "pronta"}
+    except Exception:
+        return {"q": "bot", "t": "Tive um problema para calcular essa resposta. Tente perguntar de outro jeito.", "modo": "erro"}
+
+
+def _bolha(m):
+    corpo = chat.para_html(m["t"])
+    if m.get("modo") == "ia":
+        itens = "".join(f"<li>{html_escape(chat.descreve_consulta(c))}</li>" for c in m.get("consultas") or []) or \
+            "<li>nenhuma consulta: resposta sem números do painel</li>"
+        reserva = m.get("modelo") and m.get("modelo") != CHAT_MODELO
+        modelo = f'<li class="mod">respondido por {html_escape(m.get("modelo") or CHAT_MODELO)}' + \
+                 (" (reserva: o principal estava indisponível)" if reserva else "") + "</li>"
+        corpo += f'<details class="como"><summary>Como cheguei nisso</summary><ul>{itens}{modelo}</ul></details>'
+    return f'<div class="msg {m["q"]}">{corpo}</div>'
+
+
+SUGESTOES_IA = chat.SUGESTOES_IA
+
+
+@st.fragment
+def assistente():
+    aberto = st.session_state.get("chat_aberto", False)
+    with st.container(key="chat_aba"):
+        st.button("‹" if aberto else "›", key="chat_botao", on_click=_chat_alterna)
+        if aberto:
+            st.markdown('<span class="chat-aberto"></span>', unsafe_allow_html=True)
+    with st.container(key="chat_painel"):
+        msgs = _chat_msgs()
+        pendente = st.session_state.get("chat_pendente")
+        modo = (f"IA · {CHAT_MODELO} · consulta os dados do painel" if CHAT_CHAVE
+                else "respostas prontas a partir dos dados do painel")
+        st.markdown(f'''<div class="chat-cab"><div class="chat-ico">💬</div><div><div class="chat-tit">Assistente do painel</div>
+<div class="chat-sub">{modo}</div></div></div>''', unsafe_allow_html=True)
+        espera = '<div class="msg bot digitando"><i></i><i></i><i></i></div>' if pendente else ""
+        caixa = st.empty()
+        caixa.markdown(f'<div class="chat-msgs">{espera}{"".join(_bolha(m) for m in reversed(msgs))}</div>', unsafe_allow_html=True)
+        st.pills("Sugestões", SUGESTOES_IA if CHAT_CHAVE else chat.SUGESTOES, key="chat_sug", on_change=_chat_sugestao,
+                 label_visibility="collapsed")
+        st.chat_input("Pergunte sobre a audiência…", key="chat_txt", on_submit=_chat_digitou, max_chars=500,
+                      disabled=bool(pendente))
+        if pendente:
+            msgs.append(_chat_responde(pendente))
+            del msgs[1:-40]               # guarda só as últimas mensagens da sessão
+            st.session_state["chat_pendente"] = None
+            st.rerun(scope="fragment")
+
+
+assistente()
